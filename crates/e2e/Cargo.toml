@@ -1,0 +1,15 @@
+[package]
+name = "bunkr-e2e"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+
+[dev-dependencies]
+bunkr-core = { path = "../core" }
+bunkr-proto = { path = "../proto" }
+reqwest = { version = "0.12", default-features = false, features = ["json"] }
+tokio = { version = "1", features = ["rt", "macros", "time", "process"] }
+tempfile = "3"

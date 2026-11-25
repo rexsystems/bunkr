@@ -1,0 +1,26 @@
+[package]
+name = "bunkr-server"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "bunkr-server"
+path = "src/main.rs"
+
+[dependencies]
+bunkr-proto = { path = "../proto" }
+axum = { version = "0.8", features = ["ws"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time", "signal"] }
+tower-http = { version = "0.6", features = ["fs", "cors", "set-header", "limit", "compression-gzip", "compression-br"] }
+rusqlite = { version = "0.37", features = ["bundled"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+rand = "0.8"
+sha2 = "0.10"
+subtle = "2"
+hex = "0.4"
+ed25519-dalek = "2"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+futures-util = "0.3"

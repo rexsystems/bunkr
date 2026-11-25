@@ -1,0 +1,19 @@
+[workspace]
+resolver = "2"
+members = ["crates/proto", "crates/core", "crates/server", "crates/e2e"]
+exclude = ["desktop/src-tauri"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "AGPL-3.0-or-later"
+repository = "https://github.com/rexsystems/bunkr"
+
+[profile.release]
+lto = true
+codegen-units = 1
+opt-level = 3
+strip = true
+
+[profile.release.package.bunkr-web]
+opt-level = "z"

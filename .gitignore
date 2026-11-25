@@ -1,0 +1,9 @@
+/target
+/data
+/crates/web/dist
+/desktop/src-tauri/target
+/desktop/src-tauri/gen
+node_modules
+*.db
+*.db-*
+.env
