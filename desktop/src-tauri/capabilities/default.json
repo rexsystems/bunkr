@@ -1,7 +1,14 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
-  "description": "Bunkr exposes no native commands to the web view.",
+  "description": "Native notifications and opening https links in the system browser. Nothing else.",
   "windows": ["main"],
-  "permissions": []
+  "permissions": [
+    "core:default",
+    "notification:default",
+    {
+      "identifier": "opener:allow-open-url",
+      "allow": [{ "url": "https://*" }]
+    }
+  ]
 }

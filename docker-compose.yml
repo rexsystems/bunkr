@@ -2,6 +2,8 @@
 #   docker compose up -d --build                       -> http://SERVER:8080
 #   BUNKR_DOMAIN=chat.example.com docker compose --profile tls up -d --build
 #                                                      -> https://chat.example.com (auto TLS)
+#   add  --profile calls  (and BUNKR_TURN_SECRET) to run a TURN relay so calls
+#   work across any network:  ./install.sh  sets all of this up for you.
 # First-run admin setup code:  docker compose logs bunkr | grep -A2 "SETUP CODE"
 services:
   bunkr:
@@ -11,7 +13,12 @@ services:
     restart: unless-stopped
     environment:
       BUNKR_NAME: ${BUNKR_NAME:-Bunkr}
+      BUNKR_DOMAIN: ${BUNKR_DOMAIN:-}
       BUNKR_RETENTION_DAYS: ${BUNKR_RETENTION_DAYS:-30}
+      BUNKR_MAX_UPLOAD_MB: ${BUNKR_MAX_UPLOAD_MB:-25}
+      BUNKR_TURN_URLS: ${BUNKR_TURN_URLS:-}
+      BUNKR_STUN_URLS: ${BUNKR_STUN_URLS:-}
+      BUNKR_TURN_SECRET: ${BUNKR_TURN_SECRET:-}
     volumes:
       - bunkr-data:/data
     ports:
@@ -38,6 +45,26 @@ services:
     volumes:
       - caddy-data:/data
       - caddy-config:/config
+
+  # TURN relay for calls. Media stays DTLS-SRTP encrypted end-to-end; the
+  # relay only forwards opaque packets. Needs host networking for UDP ports.
+  coturn:
+    profiles: ["calls"]
+    image: coturn/coturn:4
+    container_name: bunkr-turn
+    restart: unless-stopped
+    network_mode: host
+    command: >
+      -n --log-file=stdout --no-cli --fingerprint
+      --listening-port=3478 --min-port=49160 --max-port=49260
+      --use-auth-secret --static-auth-secret=${BUNKR_TURN_SECRET:?set BUNKR_TURN_SECRET}
+      --realm=${BUNKR_DOMAIN:-bunkr}
+      --no-multicast-peers --no-loopback-peers --stale-nonce=600
+      --denied-peer-ip=0.0.0.0-0.255.255.255 --denied-peer-ip=10.0.0.0-10.255.255.255
+      --denied-peer-ip=100.64.0.0-100.127.255.255 --denied-peer-ip=127.0.0.0-127.255.255.255
+      --denied-peer-ip=169.254.0.0-169.254.255.255 --denied-peer-ip=172.16.0.0-172.31.255.255
+      --denied-peer-ip=192.168.0.0-192.168.255.255 --denied-peer-ip=fc00::-fdff:ffff:ffff:ffff:ffff:ffff:ffff:ffff
+      --denied-peer-ip=fe80::-febf:ffff:ffff:ffff:ffff:ffff:ffff:ffff
 
 volumes:
   bunkr-data:

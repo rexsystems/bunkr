@@ -282,6 +282,7 @@ fn Sidebar() -> impl IntoView {
                     </Show>
                 </ul>
             </div>
+            <UpdateBanner/>
             <div class="sidebar-foot">
                 <div class="me">
                     <Avatar name=c.ui.get_untracked().username size=34/>
@@ -300,6 +301,26 @@ fn Sidebar() -> impl IntoView {
                 </button>
             </div>
         </nav>
+    }
+}
+
+#[component]
+fn UpdateBanner() -> impl IntoView {
+    let update = RwSignal::new(None::<(String, String)>);
+    spawn_local(async move {
+        if let Some(u) = net::check_update().await {
+            let _ = update.try_set(Some(u));
+        }
+    });
+    move || {
+        update.get().map(|(tag, url)| {
+            view! {
+                <button class="update" on:click=move |_| net::open_external(&url)>
+                    <Icon svg=ic::DOWNLOAD size=16/>
+                    <span>{format!("Update available: {tag}")}</span>
+                </button>
+            }
+        })
     }
 }
 

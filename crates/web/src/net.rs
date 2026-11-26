@@ -158,3 +158,106 @@ pub fn copy_to_clipboard(text: &str) {
         let _ = w.navigator().clipboard().write_text(text);
     }
 }
+
+fn tauri_invoke(cmd: &str, args: &JsValue) -> Option<js_sys::Promise> {
+    let w = web_sys::window()?;
+    let internals = js_sys::Reflect::get(&w, &"__TAURI_INTERNALS__".into()).ok()?;
+    let invoke: js_sys::Function = js_sys::Reflect::get(&internals, &"invoke".into())
+        .ok()?
+        .dyn_into()
+        .ok()?;
+    invoke
+        .call2(&internals, &cmd.into(), args)
+        .ok()?
+        .dyn_into()
+        .ok()
+}
+
+/// Open an external https link (system browser in the desktop app).
+pub fn open_external(url: &str) {
+    if !url.starts_with("https://") && !url.starts_with("http://") {
+        return;
+    }
+    if is_desktop() {
+        let args = js_sys::Object::new();
+        let _ = js_sys::Reflect::set(&args, &"url".into(), &url.into());
+        let _ = tauri_invoke("plugin:opener|open_url", &args);
+    } else if let Some(w) = web_sys::window() {
+        let _ = w.open_with_url_and_target_and_features(url, "_blank", "noopener,noreferrer");
+    }
+}
+
+/// In the desktop shell, route every external link to the system browser.
+pub fn install_link_handler() {
+    if !is_desktop() {
+        return;
+    }
+    let Some(doc) = web_sys::window().and_then(|w| w.document()) else {
+        return;
+    };
+    let cb = Closure::<dyn FnMut(web_sys::Event)>::new(move |e: web_sys::Event| {
+        let mut node = e
+            .target()
+            .and_then(|t| t.dyn_into::<web_sys::Element>().ok());
+        while let Some(el) = node {
+            if el.tag_name().eq_ignore_ascii_case("a") {
+                if let Some(href) = el.get_attribute("href") {
+                    if href.starts_with("http://") || href.starts_with("https://") {
+                        e.prevent_default();
+                        open_external(&href);
+                    }
+                }
+                return;
+            }
+            node = el.parent_element();
+        }
+    });
+    let _ =
+        doc.add_event_listener_with_callback_and_bool("click", cb.as_ref().unchecked_ref(), true);
+    cb.forget();
+}
+
+pub const APP_VERSION: &str = env!("CARGO_PKG_VERSION");
+pub const UPDATE_REPO: &str = match option_env!("BUNKR_UPDATE_REPO") {
+    Some(r) => r,
+    None => "rexsystems/bunkr",
+};
+
+fn parse_ver(v: &str) -> (u32, u32, u32) {
+    let mut it = v
+        .trim_start_matches('v')
+        .split(['.', '-'])
+        .map(|x| x.parse().unwrap_or(0));
+    (
+        it.next().unwrap_or(0),
+        it.next().unwrap_or(0),
+        it.next().unwrap_or(0),
+    )
+}
+
+/// Desktop only: the newest release tag on GitHub, if newer than this build.
+pub async fn check_update() -> Option<(String, String)> {
+    if !is_desktop() {
+        return None;
+    }
+    let url = format!("https://api.github.com/repos/{UPDATE_REPO}/releases/latest");
+    let opts = RequestInit::new();
+    opts.set_method("GET");
+    let req = Request::new_with_str_and_init(&url, &opts).ok()?;
+    let resp: Response = JsFuture::from(web_sys::window()?.fetch_with_request(&req))
+        .await
+        .ok()?
+        .dyn_into()
+        .ok()?;
+    if !resp.ok() {
+        return None;
+    }
+    let json = JsFuture::from(resp.json().ok()?).await.ok()?;
+    let tag = js_sys::Reflect::get(&json, &"tag_name".into())
+        .ok()?
+        .as_string()?;
+    let page = js_sys::Reflect::get(&json, &"html_url".into())
+        .ok()?
+        .as_string()?;
+    (parse_ver(&tag) > parse_ver(APP_VERSION)).then_some((tag, page))
+}

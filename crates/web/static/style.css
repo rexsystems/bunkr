@@ -565,3 +565,5 @@ kbd { font-size: 11px; padding: 2px 7px; border-radius: 6px; border: 1px solid v
 .reactions { align-items: center; justify-content: flex-start; }
 .reactions .reaction { flex: 0 0 auto; width: auto; }
 .group > .avatar { position: relative; z-index: 1; }
+.update { display: flex; align-items: center; gap: 8px; margin: 0 10px 10px; padding: 9px 12px; border-radius: 10px; background: var(--accent-soft); border: 1px solid var(--accent-line); color: var(--accent); font-size: 12.5px; font-weight: 600; }
+.update:hover { background: rgba(196,244,58,.16); }

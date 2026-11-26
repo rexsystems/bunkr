@@ -344,7 +344,7 @@ checksum = "87a0cf66fd1eb2fb7b822cb78370d82303750809bc6ba855f3f58e517d3238db"
 
 [[package]]
 name = "bunkr-core"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "argon2",
  "base64 0.22.1",
@@ -365,7 +365,7 @@ dependencies = [
 
 [[package]]
 name = "bunkr-e2e"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "bunkr-core",
  "bunkr-proto",
@@ -379,7 +379,7 @@ dependencies = [
 
 [[package]]
 name = "bunkr-proto"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "base64 0.22.1",
  "serde",
@@ -387,7 +387,7 @@ dependencies = [
 
 [[package]]
 name = "bunkr-server"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "axum",
  "base64 0.22.1",
@@ -413,7 +413,7 @@ dependencies = [
 
 [[package]]
 name = "bunkr-web"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "base64 0.22.1",
  "bunkr-core",

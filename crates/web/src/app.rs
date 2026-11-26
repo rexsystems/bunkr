@@ -44,6 +44,7 @@ pub fn App() -> impl IntoView {
     provide_context(c);
     provide_context(Toasts(RwSignal::new(vec![])));
 
+    net::install_link_handler();
     spawn_local(async move { boot(c).await });
 
     view! {

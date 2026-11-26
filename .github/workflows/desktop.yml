@@ -8,6 +8,7 @@ on:
       - "crates/web/**"
       - "crates/core/**"
       - ".github/workflows/desktop.yml"
+      - "Cargo.toml"
   workflow_dispatch:
 
 jobs:
@@ -94,3 +95,79 @@ jobs:
             desktop/src-tauri/target/${{ matrix.target }}/release/bundle/**/*.msi
             desktop/src-tauri/target/${{ matrix.target }}/release/bundle/**/*-setup.exe
           if-no-files-found: ignore
+
+  android:
+    needs: web
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: web-dist
+          path: crates/web/dist
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+      - uses: android-actions/setup-android@v3
+      - name: Install NDK
+        run: |
+          sdkmanager --install "ndk;27.2.12479018" "build-tools;34.0.0" "platforms;android-34"
+          echo "NDK_HOME=$ANDROID_HOME/ndk/27.2.12479018" >> "$GITHUB_ENV"
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-linux-android,armv7-linux-androideabi,x86_64-linux-android,i686-linux-android
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: desktop/src-tauri
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: npm ci || npm install
+        working-directory: desktop
+      - name: Generate Android project
+        working-directory: desktop
+        run: |
+          npx tauri android init --ci
+          M=src-tauri/gen/android/app/src/main/AndroidManifest.xml
+          for p in RECORD_AUDIO CAMERA MODIFY_AUDIO_SETTINGS POST_NOTIFICATIONS; do
+            grep -q "permission.$p" "$M" || sed -i "s#<application#<uses-permission android:name=\"android.permission.$p\" />\n    <application#" "$M"
+          done
+          cat "$M"
+      - name: Build APK
+        working-directory: desktop
+        run: npx tauri android build --apk
+      - name: Sign APK
+        env:
+          KEYSTORE_B64: ${{ secrets.ANDROID_KEYSTORE_B64 }}
+          KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+        run: |
+          BT="$ANDROID_HOME/build-tools/34.0.0"
+          APK=$(find desktop/src-tauri/gen/android -name "*-release-unsigned.apk" | head -1)
+          echo "unsigned: $APK"
+          if [ -n "$KEYSTORE_B64" ]; then
+            echo "$KEYSTORE_B64" | base64 -d > release.jks
+            PASS="$KEYSTORE_PASSWORD"
+          else
+            # No signing key configured yet: sign with a throwaway key so the
+            # APK installs. Add ANDROID_KEYSTORE_B64 / ANDROID_KEYSTORE_PASSWORD
+            # secrets to get a stable key (needed for in-place updates).
+            PASS=throwaway-$RANDOM$RANDOM
+            keytool -genkeypair -keystore release.jks -storepass "$PASS" -keypass "$PASS" \
+              -alias bunkr -keyalg RSA -keysize 4096 -validity 10000 -dname "CN=Bunkr"
+          fi
+          "$BT/zipalign" -f -p 4 "$APK" aligned.apk
+          "$BT/apksigner" sign --ks release.jks --ks-pass "pass:$PASS" --out bunkr-android.apk aligned.apk
+          "$BT/apksigner" verify bunkr-android.apk
+          rm -f release.jks
+      - uses: actions/upload-artifact@v4
+        with:
+          name: bunkr-android
+          path: bunkr-android.apk
+      - name: Attach to release
+        if: github.ref_type == 'tag'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh release upload "${{ github.ref_name }}" bunkr-android.apk --clobber || true
