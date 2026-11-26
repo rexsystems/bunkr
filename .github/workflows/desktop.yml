@@ -2,6 +2,12 @@ name: Desktop apps
 on:
   push:
     tags: ["v*"]
+    branches: [main]
+    paths:
+      - "desktop/**"
+      - "crates/web/**"
+      - "crates/core/**"
+      - ".github/workflows/desktop.yml"
   workflow_dispatch:
 
 jobs:
