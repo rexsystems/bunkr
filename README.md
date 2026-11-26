@@ -179,14 +179,6 @@ Icons: [Hugeicons](https://hugeicons.com) free set (MIT), regenerated with `node
 
 ---
 
-## 🇷🇴 Pe scurt
-
-- **Instalare:** `git clone https://github.com/rexsystems/bunkr && cd bunkr && docker compose up -d --build`
-- **Cu domeniu + HTTPS:** `BUNKR_DOMAIN=chat.domeniu.ro docker compose --profile tls up -d --build`
-- **Codul de admin:** `docker compose logs bunkr | grep -A1 "SETUP CODE"`. Primul cont creat cu el devine admin.
-- **Schimbi parola → se resetează TOT:** chei noi, toate device-urile delogate, istoricul șters. Nu există recuperare de parolă.
-- Serverul vede doar date criptate. Nu știe cine a trimis mesajul și nu salvează IP-uri sau emailuri.
-
 ## License
 
 AGPL-3.0-or-later
