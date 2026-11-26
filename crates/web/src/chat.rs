@@ -9,11 +9,11 @@ use wasm_bindgen::JsCast;
 use wasm_bindgen_futures::JsFuture;
 
 use crate::app::ctx;
-use crate::call::{self, calls, CallUi, Calls};
+use crate::call::{self, calls, CallUi, Calls, Slot};
 use crate::engine::{ChanView, Cmd, EngineHandle, MsgView, Outgoing, CALL_SINK};
 use crate::icons as ic;
 use crate::net;
-use crate::util::{fmt_day, fmt_time, toasts, ttl_label, Avatar, Icon};
+use crate::util::{fmt_day, fmt_time, toasts, ttl_label, Avatar, Dropdown, Icon, Logo};
 
 pub const QUICK_EMOJI: [&str; 8] = ["👍", "❤️", "😂", "🔥", "😮", "😢", "🙏", "🎉"];
 
@@ -243,15 +243,15 @@ fn Sidebar() -> impl IntoView {
     view! {
         <nav class="sidebar">
             <div class="server-head">
-                <div class="logo-mark"><Icon svg=ic::LOCK size=20/></div>
+                <div class="logo-mark"><Logo/></div>
                 <div class="server-meta grow">
                     <div class="server-name">{move || c.ui.get().server_name}</div>
                     <div class="server-sub mono">
                         {move || {
                             if c.ui.get().online {
-                                view! { <span class="dot dot-on"></span><span>"E2EE · live"</span> }.into_any()
+                                view! { <span class="dot dot-on"></span><span>"Connected"</span> }.into_any()
                             } else {
-                                view! { <span class="dot dot-off"></span><span>"reconnecting…"</span> }.into_any()
+                                view! { <span class="dot dot-off"></span><span>"Reconnecting…"</span> }.into_any()
                             }
                         }}
                     </div>
@@ -278,7 +278,7 @@ fn Sidebar() -> impl IntoView {
                         <ChannelItem ch/>
                     </For>
                     <Show when=move || dms().is_empty()>
-                        <li class="empty-hint">"No DMs yet. Every DM is its own end-to-end encrypted group of two."</li>
+                        <li class="empty-hint">"No direct messages yet."</li>
                     </Show>
                 </ul>
             </div>
@@ -451,7 +451,7 @@ fn ChatPane() -> impl IntoView {
                     <span class="head-topic">
                         {move || {
                             if dm() {
-                                "Private · only the two of you hold the keys".to_string()
+                                "Only the two of you can read this".to_string()
                             } else {
                                 chan().map(|c| c.topic).unwrap_or_default()
                             }
@@ -519,11 +519,10 @@ fn DmTimer() -> impl IntoView {
                 .unwrap_or(0)
         })
     };
-    let set = move |e: leptos::ev::Event| {
+    let set = move |hours: i64| {
         let Some(cid) = v.selected.get_untracked() else {
             return;
         };
-        let hours: i64 = event_target_value(&e).parse().unwrap_or(0);
         let http = c.http.get_value();
         spawn_local(async move {
             let body = bunkr_proto::TtlReq { ttl_hours: hours };
@@ -544,21 +543,14 @@ fn DmTimer() -> impl IntoView {
             }
         });
     };
-    const OPTS: [(i64, &str); 6] = [
-        (0, "Off"),
-        (1, "1h"),
-        (24, "1d"),
-        (168, "7d"),
-        (720, "30d"),
-        (2160, "90d"),
-    ];
     view! {
-        <label class="timer-select" title="Disappearing messages">
-            <Icon svg=ic::TIMER size=18/>
-            <select on:change=set prop:value=move || ttl().to_string()>
-                {OPTS.iter().map(|(h, l)| view! { <option value=h.to_string() selected=move || ttl() == *h>{*l}</option> }).collect_view()}
-            </select>
-        </label>
+        <Dropdown
+            options=crate::util::ttl_options()
+            value=Signal::derive(ttl)
+            on_pick=set
+            label="Disappearing messages"
+            icon=ic::TIMER
+        />
     }
 }
 
@@ -581,8 +573,8 @@ fn ChannelIntro() -> impl IntoView {
                 }}
             </h2>
             <p class="muted">
-                "Messages, files and calls here are end-to-end encrypted with MLS and a post-quantum hybrid key exchange. "
-                "The server can't read them, and new devices can't read anything sent before they joined."
+                "Messages, files and calls here are end-to-end encrypted. "
+                "New devices only see messages sent after they join."
             </p>
             {move || {
                 let ttl = chan().and_then(|c| ttl_label(c.ttl_hours))?;
@@ -682,28 +674,30 @@ fn MessageGroup(g: Group) -> impl IntoView {
     }
     let first = g.items[0].clone();
     let h = crate::util::hue(&first.username);
-    let lines = g
-        .items
-        .into_iter()
-        .map(|m| view! { <Line m/> })
-        .collect_view();
+    // The first message carries the avatar and name, so hovering it
+    // highlights the whole row (avatar, name and text) as one block.
+    let head = view! {
+        {first.reply.clone().map(|r| view! { <ReplyQuote r/> })}
+        <header class="group-head">
+            <span class="author" style=format!("--h:{h}")>{first.username.clone()}</span>
+            {first.unverified.then(|| view! {
+                <span class="tag tag-warn" title="This device was not signed by the account key we know for this user">
+                    <Icon svg=ic::ALERT size=12/>"unverified"
+                </span>
+            })}
+            <time class="mono">{fmt_time(first.ts)}</time>
+        </header>
+    }
+    .into_any();
+    let avatar = view! { <Avatar name=first.username.clone() size=38/> }.into_any();
+    let mut items = g.items.into_iter();
+    let lead = items.next().map(|m| view! { <Line m avatar head/> });
+    let rest = items.map(|m| view! { <Line m/> }).collect_view();
     view! {
         {day}
         <article class="group" class:mine=first.mine>
-            <Avatar name=first.username.clone() size=38/>
-            <div class="group-body">
-                {first.reply.clone().map(|r| view! { <ReplyQuote r/> })}
-                <header class="group-head">
-                    <span class="author" style=format!("--h:{h}")>{first.username.clone()}</span>
-                    {first.unverified.then(|| view! {
-                        <span class="tag tag-warn" title="This device was not signed by the account key we know for this user">
-                            <Icon svg=ic::ALERT size=12/>"unverified"
-                        </span>
-                    })}
-                    <time class="mono">{fmt_time(first.ts)}</time>
-                </header>
-                {lines}
-            </div>
+            {lead}
+            {rest}
         </article>
     }
     .into_any()
@@ -723,7 +717,12 @@ fn ReplyQuote(r: crate::engine::ReplyView) -> impl IntoView {
 }
 
 #[component]
-fn Line(m: MsgView) -> impl IntoView {
+fn Line(
+    m: MsgView,
+    #[prop(optional)] avatar: Option<AnyView>,
+    #[prop(optional)] head: Option<AnyView>,
+) -> impl IntoView {
+    let lead = avatar.is_some();
     let c = ctx();
     let v = view_ctx();
     let t = toasts();
@@ -825,11 +824,13 @@ fn Line(m: MsgView) -> impl IntoView {
         <div
             class="line"
             id=format!("m-{id}")
+            class:lead=lead
             class:mention=mention
             class:highlight=move || v.highlight.get().as_deref() == Some(hl_id.as_str())
         >
-            <span class="line-time mono">{fmt_time(m.ts)}</span>
+            {if lead { avatar } else { Some(view! { <span class="line-time mono">{fmt_time(m.ts)}</span> }.into_any()) }}
             <div class="line-main">
+                {head}
                 {if deleted {
                     view! { <div class="line-text deleted">"message deleted"</div> }.into_any()
                 } else {
@@ -1273,7 +1274,7 @@ fn Composer(dropped: RwSignal<Vec<Pending>, LocalStorage>) -> impl IntoView {
                 fallback=|| view! {
                     <div class="composer-wait">
                         <span class="spinner sm"></span>
-                        <span>"Securing this device… a member's app will add you to the encrypted group automatically."</span>
+                        <span>"Setting up encryption on this device…"</span>
                     </div>
                 }
             >
@@ -1368,10 +1369,6 @@ fn Composer(dropped: RwSignal<Vec<Pending>, LocalStorage>) -> impl IntoView {
                         {move || if sending.get() { view! { <span class="spinner sm"></span> }.into_any() } else { view! { <Icon svg=ic::SEND size=20/> }.into_any() }}
                     </button>
                 </form>
-                <div class="composer-hint mono">
-                    <Icon svg=ic::LOCK size=12/>
-                    <span>"end-to-end encrypted · padded · sender hidden from server"</span>
-                </div>
             </Show>
         </div>
     }
@@ -1443,54 +1440,137 @@ fn CallStage() -> impl IntoView {
     }
 }
 
+/// Corner brackets, drawn to match the Hugeicons stroke style.
+const FULLSCREEN: &str = r##"<path d="M8 3H6C4.34 3 3 4.34 3 6V8M16 3H18C19.66 3 21 4.34 21 6V8M8 21H6C4.34 21 3 19.66 3 18V16M16 21H18C19.66 21 21 19.66 21 18V16" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5"/>"##;
+
+#[derive(Clone, PartialEq)]
+struct TileInfo {
+    device: i64,
+    slot: Slot,
+    name: String,
+    video: bool,
+}
+
+impl TileInfo {
+    fn key(&self) -> (i64, Slot) {
+        (self.device, self.slot)
+    }
+}
+
 #[component]
 fn ActiveCall() -> impl IntoView {
     let c = ctx();
     let cu = calls();
     let sig = cu.0;
     let t = toasts();
+    // A tile the user clicked to put on stage, or "grid" to show all equally.
+    let pinned = RwSignal::new(None::<(i64, Slot)>);
+    let grid = RwSignal::new(false);
     let tiles = move || {
         let ui = sig.get();
-        let mut v: Vec<(i64, String, bool, u64)> = vec![(
-            0,
-            c.ui.get_untracked().username,
-            ui.video && !ui.cam_off || ui.sharing,
-            ui.streams_rev,
-        )];
+        let me = c.ui.get_untracked().username;
+        let mut v = vec![TileInfo { device: 0, slot: Slot::Cam, name: me.clone(), video: ui.me.cam }];
+        if ui.me.screen {
+            v.push(TileInfo { device: 0, slot: Slot::Screen, name: me, video: true });
+        }
         for p in &ui.peers {
-            v.push((
-                p.device,
-                c.ui.with(|u| u.username(p.user)),
-                p.video,
-                ui.streams_rev,
-            ));
+            let name = c.ui.with(|u| u.username(p.user));
+            v.push(TileInfo { device: p.device, slot: Slot::Cam, name: name.clone(), video: p.media.cam });
+            if p.media.screen {
+                v.push(TileInfo { device: p.device, slot: Slot::Screen, name, video: true });
+            }
         }
         v
     };
+    // On stage: the pinned tile, else someone else's screen, else our own.
+    let stage = move || {
+        let all = tiles();
+        if let Some(k) = pinned.get() {
+            if all.iter().any(|t| t.key() == k) {
+                return Some(k);
+            }
+        }
+        if grid.get() {
+            return None;
+        }
+        let screens = all.iter().filter(|t| t.slot == Slot::Screen);
+        screens.clone().find(|t| t.device != 0).or(screens.clone().next()).map(|t| t.key())
+    };
+    let on_tile = Callback::new(move |k: (i64, Slot)| {
+        if untrack(stage) == Some(k) {
+            pinned.set(None);
+            grid.set(true);
+        } else {
+            pinned.set(Some(k));
+            grid.set(false);
+        }
+    });
+    let main = move || {
+        let s = stage();
+        tiles().into_iter().filter(|t| Some(t.key()) == s).collect::<Vec<_>>()
+    };
+    let strip = move || {
+        let s = stage();
+        tiles().into_iter().filter(|t| Some(t.key()) != s).collect::<Vec<_>>()
+    };
+    let any_video = move || tiles().iter().any(|t| t.video);
+    let peers = move || sig.get().peers.iter().map(|p| p.device).collect::<Vec<_>>();
+    let share_ok = call::can_share();
     view! {
-        <div class="call" class:video=move || sig.get().video>
+        <div class="call" class:video=any_video class:staged=move || stage().is_some()>
+            <For each=peers key=|d| *d let:d>
+                <PeerAudio device=d/>
+            </For>
+            <Show when=move || stage().is_some()>
+                <div class="call-stage">
+                    <For each=main key=|t| (t.key(), t.video) let:tile>
+                        <CallTile tile on_click=on_tile focused=true/>
+                    </For>
+                </div>
+            </Show>
             <div class="call-grid">
-                <For each=tiles key=|t| (t.0, t.2, t.3) let:tile>
-                    <CallTile device=tile.0 name=tile.1 video=tile.2/>
+                <For each=strip key=|t| (t.key(), t.video) let:tile>
+                    <CallTile tile on_click=on_tile focused=false/>
                 </For>
                 <Show when=move || sig.get().peers.is_empty() && !sig.get().joining>
-                    <div class="call-wait mono">"Waiting for others to join…"</div>
+                    <div class="call-wait">"Waiting for others to join…"</div>
                 </Show>
             </div>
             <div class="call-controls">
-                <span class="call-e2e mono"><Icon svg=ic::LOCK size=12/>"E2E · DTLS-SRTP · keys verified via MLS"</span>
-                <button class="round" class:off=move || sig.get().muted title="Mute" on:click=move |_| call::toggle_mute(sig)>
+                <span class="call-e2e"><Icon svg=ic::LOCK size=12/>"Encrypted call"</span>
+                <button
+                    class="round"
+                    class:off=move || sig.get().muted
+                    title=move || if sig.get().muted { "Unmute" } else { "Mute" }
+                    aria-label=move || if sig.get().muted { "Unmute" } else { "Mute" }
+                    aria-pressed=move || sig.get().muted.to_string()
+                    on:click=move |_| call::toggle_mute(sig)
+                >
                     {move || if sig.get().muted { view! { <Icon svg=ic::MIC_OFF size=20/> }.into_any() } else { view! { <Icon svg=ic::MIC size=20/> }.into_any() }}
                 </button>
-                <Show when=move || sig.get().video>
-                    <button class="round" class:off=move || sig.get().cam_off title="Camera" on:click=move |_| call::toggle_cam(sig)>
-                        {move || if sig.get().cam_off { view! { <Icon svg=ic::CAM_OFF size=20/> }.into_any() } else { view! { <Icon svg=ic::VIDEO size=20/> }.into_any() }}
-                    </button>
-                    <button class="round hide-xs" class:on=move || sig.get().sharing title="Share screen" on:click=move |_| call::toggle_share(sig, move |e| t.err(e))>
+                <button
+                    class="round"
+                    class:on=move || sig.get().me.cam
+                    title=move || if sig.get().me.cam { "Turn camera off" } else { "Turn camera on" }
+                    aria-label=move || if sig.get().me.cam { "Turn camera off" } else { "Turn camera on" }
+                    aria-pressed=move || sig.get().me.cam.to_string()
+                    on:click=move |_| call::toggle_cam(sig, move |e| t.err(e))
+                >
+                    {move || if sig.get().me.cam { view! { <Icon svg=ic::VIDEO size=20/> }.into_any() } else { view! { <Icon svg=ic::CAM_OFF size=20/> }.into_any() }}
+                </button>
+                {share_ok.then(|| view! {
+                    <button
+                        class="round"
+                        class:on=move || sig.get().me.screen
+                        title=move || if sig.get().me.screen { "Stop sharing" } else { "Share your screen" }
+                        aria-label=move || if sig.get().me.screen { "Stop sharing" } else { "Share your screen" }
+                        aria-pressed=move || sig.get().me.screen.to_string()
+                        on:click=move |_| call::toggle_share(sig, move |e| t.err(e))
+                    >
                         <Icon svg=ic::SCREEN size=20/>
                     </button>
-                </Show>
-                <button class="round hangup" title="Leave call" on:click=move |_| call::leave(sig)>
+                })}
+                <button class="round hangup" title="Leave call" aria-label="Leave call" on:click=move |_| call::leave(sig)>
                     <Icon svg=ic::HANGUP size=20/>
                 </button>
             </div>
@@ -1498,31 +1578,65 @@ fn ActiveCall() -> impl IntoView {
     }
 }
 
+/// Plays one remote participant's audio, whatever their tiles are doing.
 #[component]
-fn CallTile(device: i64, name: String, video: bool) -> impl IntoView {
-    let vid: NodeRef<leptos::html::Video> = NodeRef::new();
+fn PeerAudio(device: i64) -> impl IntoView {
+    let sig = calls().0;
     let aud: NodeRef<leptos::html::Audio> = NodeRef::new();
     Effect::new(move |_| {
-        if let Some(v) = vid.get() {
-            call::attach(v.unchecked_ref(), device);
-        }
+        sig.with(|u| u.streams_rev);
         if let Some(a) = aud.get() {
-            call::attach(a.unchecked_ref(), device);
+            call::attach(a.unchecked_ref(), device, Slot::Audio);
+        }
+    });
+    view! { <audio node_ref=aud autoplay=true class="hidden-media"></audio> }
+}
+
+#[component]
+fn CallTile(tile: TileInfo, on_click: Callback<(i64, Slot)>, focused: bool) -> impl IntoView {
+    let sig = calls().0;
+    let vid: NodeRef<leptos::html::Video> = NodeRef::new();
+    let TileInfo { device, slot, name, video } = tile.clone();
+    Effect::new(move |_| {
+        sig.with(|u| u.streams_rev);
+        if let Some(v) = vid.get() {
+            call::attach(v.unchecked_ref(), device, slot);
         }
     });
     let local = device == 0;
+    let screen = slot == Slot::Screen;
+    let label = match (local, screen) {
+        (true, true) => "Your screen".to_string(),
+        (true, false) => format!("{name} (you)"),
+        (false, true) => format!("{name}'s screen"),
+        (false, false) => name.clone(),
+    };
+    let tile_ref: NodeRef<leptos::html::Div> = NodeRef::new();
+    let full = move |e: leptos::ev::MouseEvent| {
+        e.stop_propagation();
+        if let Some(el) = tile_ref.get_untracked() {
+            let _ = el.request_fullscreen();
+        }
+    };
+    let action = if focused { "Back to grid view".to_string() } else { format!("Focus {label}") };
     view! {
-        <div class="tile" class:has-video=video>
+        <div class="tile" class:has-video=video class:screen=screen class:focused=focused node_ref=tile_ref>
+            <button class="tile-hit" aria-label=action.clone() title=action on:click=move |_| on_click.run((device, slot))></button>
             {if video {
-                view! { <video node_ref=vid autoplay=true playsinline=true prop:muted=local class:mirror=local></video> }.into_any()
+                // Only your own camera is mirrored, like a mirror. Screens never are.
+                view! { <video node_ref=vid autoplay=true playsinline=true prop:muted=true class:mirror=local && !screen></video> }.into_any()
             } else {
-                view! {
-                    <div class="tile-avatar"><Avatar name=name.clone() size=64/></div>
-                    {(!local).then(|| view! { <audio node_ref=aud autoplay=true></audio> })}
-                }
-                .into_any()
+                view! { <div class="tile-avatar"><Avatar name=name.clone() size=if focused { 96 } else { 64 }/></div> }.into_any()
             }}
-            <span class="tile-name">{if local { format!("{name} (you)") } else { name }}</span>
+            <span class="tile-name">
+                {screen.then(|| view! { <Icon svg=ic::SCREEN size=13/> })}
+                {label.clone()}
+            </span>
+            {(screen && video).then(|| view! {
+                <button class="tile-full icon-btn sm" title="Full screen" aria-label=format!("Show {label} full screen") on:click=full>
+                    <Icon svg=FULLSCREEN size=16/>
+                </button>
+            })}
         </div>
     }
 }

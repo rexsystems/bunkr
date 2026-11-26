@@ -1,5 +1,5 @@
 use leptos::prelude::*;
-use wasm_bindgen::JsValue;
+use wasm_bindgen::{JsCast, JsValue};
 
 /// Inline Hugeicon.
 #[component]
@@ -18,6 +18,169 @@ pub fn Icon(
             aria-hidden="true"
             inner_html=svg
         ></svg>
+    }
+}
+
+/// Disappearing-message choices, in hours (0 = off).
+pub fn ttl_options() -> Vec<(i64, String)> {
+    [(0, "Off"), (1, "1 hour"), (24, "1 day"), (168, "7 days"), (720, "30 days"), (2160, "90 days")]
+        .into_iter()
+        .map(|(h, l)| (h, l.to_string()))
+        .collect()
+}
+
+/// Custom select: a trigger button and a listbox popover.
+/// With `icon`, the trigger is an icon button (menu opens to the left);
+/// otherwise it looks like a form field and shows the current label.
+#[component]
+pub fn Dropdown(
+    options: Vec<(i64, String)>,
+    #[prop(into)] value: Signal<i64>,
+    #[prop(into)] on_pick: Callback<i64>,
+    label: &'static str,
+    #[prop(optional)] icon: Option<&'static str>,
+) -> impl IntoView {
+    let open = RwSignal::new(false);
+    let trigger: NodeRef<leptos::html::Button> = NodeRef::new();
+    let items: Vec<NodeRef<leptos::html::Button>> = options.iter().map(|_| NodeRef::new()).collect();
+    let n = options.len();
+    let focus = {
+        let items = items.clone();
+        move |i: usize| {
+            if let Some(b) = items.get(i).and_then(|r| r.get_untracked()) {
+                let _ = b.focus();
+            }
+        }
+    };
+    let current = {
+        let options = options.clone();
+        move || {
+            let v = value.get();
+            options.iter().find(|(k, _)| *k == v).map(|(_, l)| l.clone()).unwrap_or_default()
+        }
+    };
+    let close = move |refocus: bool| {
+        open.set(false);
+        if refocus {
+            if let Some(t) = trigger.get_untracked() {
+                let _ = t.focus();
+            }
+        }
+    };
+    let opts = options.clone();
+    let open_menu = {
+        let focus = focus.clone();
+        move || {
+            open.set(true);
+            let sel = opts.iter().position(|(k, _)| *k == value.get_untracked()).unwrap_or(0);
+            let focus = focus.clone();
+            request_animation_frame(move || focus(sel));
+        }
+    };
+    let on_trigger_key = {
+        let open_menu = open_menu.clone();
+        move |e: leptos::ev::KeyboardEvent| {
+            if matches!(e.key().as_str(), "ArrowDown" | "ArrowUp") {
+                e.prevent_default();
+                open_menu();
+            }
+        }
+    };
+    let on_menu_key = {
+        let focus = focus.clone();
+        let items = items.clone();
+        move |e: leptos::ev::KeyboardEvent| {
+            let doc_active = web_sys::window().and_then(|w| w.document()).and_then(|d| d.active_element());
+            let cur = items.iter().position(|r| {
+                r.get_untracked()
+                    .map(|b| doc_active.as_ref().map(|a| a == b.unchecked_ref::<web_sys::Element>()).unwrap_or(false))
+                    .unwrap_or(false)
+            });
+            match e.key().as_str() {
+                "ArrowDown" => { e.prevent_default(); focus(cur.map(|i| (i + 1) % n).unwrap_or(0)); }
+                "ArrowUp" => { e.prevent_default(); focus(cur.map(|i| (i + n - 1) % n).unwrap_or(0)); }
+                "Home" => { e.prevent_default(); focus(0); }
+                "End" => { e.prevent_default(); focus(n - 1); }
+                "Escape" => { e.prevent_default(); e.stop_propagation(); close(true); }
+                "Tab" => close(false),
+                _ => {}
+            }
+        }
+    };
+    let rows = options
+        .into_iter()
+        .zip(items)
+        .map(|((k, l), r)| {
+            view! {
+                <li role="presentation">
+                    <button
+                        type="button"
+                        role="option"
+                        class="dd-item"
+                        node_ref=r
+                        aria-selected=move || (value.get() == k).to_string()
+                        on:click=move |_| { on_pick.run(k); close(true); }
+                    >
+                        <span class="grow">{l}</span>
+                        <Show when=move || value.get() == k>
+                            <Icon svg=crate::icons::TICK size=16/>
+                        </Show>
+                    </button>
+                </li>
+            }
+        })
+        .collect_view();
+    view! {
+        <div class="dd" class:dd-icon=icon.is_some()>
+            <button
+                type="button"
+                node_ref=trigger
+                class=if icon.is_some() { "dd-trigger icon-btn" } else { "dd-trigger input" }
+                class:active=move || open.get()
+                aria-haspopup="listbox"
+                aria-expanded=move || open.get().to_string()
+                aria-label=label
+                title=label
+                on:click=move |_| if open.get_untracked() { close(false) } else { open_menu() }
+                on:keydown=on_trigger_key
+            >
+                {match icon {
+                    Some(svg) => view! { <Icon svg size=18/> }.into_any(),
+                    None => view! {
+                        <span class="grow">{current}</span>
+                        <Icon svg=crate::icons::ARROW_DOWN size=16 class="dd-chev"/>
+                    }.into_any(),
+                }}
+            </button>
+            <Show when=move || open.get()>
+                <div class="dd-scrim" on:click=move |_| close(false)></div>
+            </Show>
+            <ul class="dd-menu" role="listbox" aria-label=label class:open=move || open.get() on:keydown=on_menu_key.clone()>
+                {icon.is_some().then(|| view! { <li class="dd-title" role="presentation">{label}</li> })}
+                {rows}
+            </ul>
+        </div>
+    }
+}
+
+/// Bunker glyph on a 12x12 pixel grid: dome, embrasure slit, base.
+/// Keep in sync with static/icon.svg.
+pub const LOGO_PIXELS: &str =
+    "M4 3h4v1H4zM2 4h8v1H2zM1 5h10v1H1zM1 6h2v1H1zM9 6h2v1H9zM0 7h12v2H0z";
+
+#[component]
+pub fn Logo(#[prop(default = 24)] size: u32) -> impl IntoView {
+    view! {
+        <svg
+            class="icon"
+            width=size
+            height=size
+            viewBox="0 0 12 12"
+            shape-rendering="crispEdges"
+            aria-hidden="true"
+        >
+            <path d=LOGO_PIXELS fill="currentColor"/>
+        </svg>
     }
 }
 

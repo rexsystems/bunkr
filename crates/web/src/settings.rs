@@ -9,7 +9,7 @@ use crate::chat::view_ctx;
 use crate::engine::Cmd;
 use crate::icons as ic;
 use crate::net;
-use crate::util::{toasts, ttl_label, Avatar, Icon};
+use crate::util::{toasts, ttl_label, ttl_options, Avatar, Dropdown, Icon};
 
 #[derive(Clone, Copy, PartialEq)]
 enum Tab {
@@ -352,19 +352,16 @@ fn ChannelsTab() -> impl IntoView {
             }
         });
     };
-    const TTLS: [(i64, &str); 6] = [
-        (0, "Off"),
-        (1, "1 hour"),
-        (24, "1 day"),
-        (168, "7 days"),
-        (720, "30 days"),
-        (2160, "90 days"),
-    ];
+    let public = move || {
+        let mut v = c.ui.get().channels;
+        v.retain(|ch| !ch.dm);
+        v
+    };
     view! {
         <h2>"Channels"</h2>
-        <p class="muted small">"Every user is in every channel. Each channel is its own MLS group."</p>
+        <p class="muted small">"Everyone on the server is in every channel. Direct messages are private and not listed here."</p>
         <div class="table">
-            <For each=move || c.ui.get().channels key=|ch| (ch.id, ch.name.clone(), ch.topic.clone(), ch.ttl_hours) let:ch>
+            <For each=public key=|ch| (ch.id, ch.name.clone(), ch.topic.clone(), ch.ttl_hours) let:ch>
                 {
                     let id = ch.id;
                     let ch2 = ch.clone();
@@ -397,12 +394,15 @@ fn ChannelsTab() -> impl IntoView {
                     <span class="label">"Name"</span>
                     <input class="input" placeholder="announcements" prop:value=move || name.get() on:input=move |e| name.set(event_target_value(&e))/>
                 </label>
-                <label class="field">
+                <div class="field">
                     <span class="label">"Disappearing messages"</span>
-                    <select class="input" on:change=move |e| ttl.set(event_target_value(&e).parse().unwrap_or(0)) prop:value=move || ttl.get().to_string()>
-                        {TTLS.iter().map(|(h, l)| view! { <option value=h.to_string() selected=move || ttl.get() == *h>{*l}</option> }).collect_view()}
-                    </select>
-                </label>
+                    <Dropdown
+                        options=ttl_options()
+                        value=ttl
+                        on_pick=move |h| ttl.set(h)
+                        label="Disappearing messages"
+                    />
+                </div>
             </div>
             <label class="field">
                 <span class="label">"Topic"</span>

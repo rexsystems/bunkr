@@ -6,7 +6,7 @@ use leptos::task::spawn_local;
 use crate::engine::{Ended, Engine, EngineHandle, Live, Ui};
 use crate::icons as ic;
 use crate::net::{self, WebHttp};
-use crate::util::{toasts, Icon, ToastHost, Toasts};
+use crate::util::{toasts, Icon, Logo, ToastHost, Toasts};
 
 #[derive(Clone)]
 pub enum Phase {
@@ -123,7 +123,7 @@ fn start_engine(
 fn Splash() -> impl IntoView {
     view! {
         <div class="splash">
-            <div class="logo-mark big"><Icon svg=ic::LOCK size=34/></div>
+            <div class="logo-mark big"><Logo size=48/></div>
             <div class="spinner"></div>
         </div>
     }
@@ -135,20 +135,18 @@ fn Brand() -> impl IntoView {
         <aside class="brand">
             <div class="brand-top">
                 <div class="logo">
-                    <div class="logo-mark"><Icon svg=ic::LOCK size=22/></div>
+                    <div class="logo-mark"><Logo/></div>
                     <span>"bunkr"</span>
                 </div>
             </div>
             <div class="brand-copy">
                 <h1>"Talk like nobody's listening."<br/><em>"Because nobody is."</em></h1>
                 <ul class="brand-points">
-                    <li><Icon svg=ic::QUANTUM size=18/><span>"Post-quantum MLS end-to-end encryption"</span></li>
-                    <li><Icon svg=ic::SERVER size=18/><span>"Zero-knowledge server: it stores only ciphertext"</span></li>
+                    <li><Icon svg=ic::CHAT_LOCK size=18/><span>"Messages, files and calls are end-to-end encrypted"</span></li>
+                    <li><Icon svg=ic::SERVER size=18/><span>"The server can't read anything you send"</span></li>
                     <li><Icon svg=ic::FINGERPRINT size=18/><span>"Your password never leaves this device"</span></li>
-                    <li><Icon svg=ic::FIRE size=18/><span>"Password change = total reset, no recovery"</span></li>
                 </ul>
             </div>
-            <div class="brand-foot mono">"MLS · RFC 9420 · ML-KEM-768 + X25519 · Argon2id"</div>
         </aside>
     }
 }
@@ -331,7 +329,7 @@ fn AuthScreen(notice: Option<String>) -> impl IntoView {
             <main class="auth-main">
                 <form class="auth-card" on:submit=submit>
                     <div class="auth-logo-sm logo">
-                        <div class="logo-mark"><Icon svg=ic::LOCK size=20/></div>
+                        <div class="logo-mark"><Logo/></div>
                         <span>"bunkr"</span>
                     </div>
                     {notice.map(|n| view! {
@@ -473,7 +471,7 @@ fn AuthScreen(notice: Option<String>) -> impl IntoView {
                             }
                         }}
                     </button>
-                    <p class="fineprint mono">"Keys are generated on this device. The server only ever sees ciphertext."</p>
+                    <p class="fineprint">"Your keys are created on this device and never leave it."</p>
                 </form>
             </main>
         </div>
@@ -531,7 +529,7 @@ fn UnlockScreen(username: String) -> impl IntoView {
             <main class="auth-main">
                 <form class="auth-card" on:submit=submit>
                     <div class="auth-logo-sm logo">
-                        <div class="logo-mark"><Icon svg=ic::LOCK size=20/></div>
+                        <div class="logo-mark"><Logo/></div>
                         <span>"bunkr"</span>
                     </div>
                     <div class="unlock-who">
