@@ -415,6 +415,7 @@ dependencies = [
 name = "bunkr-web"
 version = "0.1.0"
 dependencies = [
+ "base64 0.22.1",
  "bunkr-core",
  "bunkr-proto",
  "console_error_panic_hook",

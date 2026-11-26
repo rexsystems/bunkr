@@ -1,10 +1,12 @@
 //! Bunkr web client (Leptos, compiled to WebAssembly).
 
 mod app;
+mod call;
 mod chat;
 mod engine;
 mod icons;
 mod net;
+mod notify;
 mod settings;
 mod util;
 

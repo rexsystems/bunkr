@@ -3,7 +3,7 @@ use bunkr_proto::ServerInfo;
 use leptos::prelude::*;
 use leptos::task::spawn_local;
 
-use crate::engine::{Ended, Engine, EngineHandle, Ui};
+use crate::engine::{Ended, Engine, EngineHandle, Live, Ui};
 use crate::icons as ic;
 use crate::net::{self, WebHttp};
 use crate::util::{toasts, Icon, ToastHost, Toasts};
@@ -21,6 +21,7 @@ pub struct Ctx {
     pub phase: RwSignal<Phase>,
     pub info: RwSignal<Option<ServerInfo>>,
     pub ui: RwSignal<Ui>,
+    pub live: Live,
     pub http: StoredValue<WebHttp, LocalStorage>,
 }
 
@@ -34,6 +35,10 @@ pub fn App() -> impl IntoView {
         phase: RwSignal::new(Phase::Boot),
         info: RwSignal::new(None),
         ui: RwSignal::new(Ui::default()),
+        live: Live {
+            typing: RwSignal::new(Default::default()),
+            selected: RwSignal::new(None),
+        },
         http: StoredValue::new_local(WebHttp::new(&net::server_base())),
     };
     provide_context(c);
@@ -89,6 +94,7 @@ fn start_engine(
         keys,
         vault,
         c.ui,
+        c.live,
         info.as_ref()
             .map(|i| i.name.clone())
             .unwrap_or_else(|| "Bunkr".into()),

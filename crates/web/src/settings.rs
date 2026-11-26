@@ -14,6 +14,7 @@ use crate::util::{toasts, ttl_label, Avatar, Icon};
 #[derive(Clone, Copy, PartialEq)]
 enum Tab {
     Account,
+    Notifications,
     Security,
     Users,
     Channels,
@@ -39,6 +40,7 @@ pub fn Settings() -> impl IntoView {
                 <aside class="settings-nav">
                     <div class="settings-title">"Settings"</div>
                     {tab_btn(Tab::Account, "Account", ic::USER)}
+                    {tab_btn(Tab::Notifications, "Notifications", ic::BELL)}
                     {tab_btn(Tab::Security, "Security", ic::SHIELD_KEY)}
                     <Show when=move || c.ui.get().is_admin>
                         <div class="settings-title">"Admin"</div>
@@ -50,6 +52,7 @@ pub fn Settings() -> impl IntoView {
                     <button class="icon-btn modal-close" aria-label="Close" on:click=close><Icon svg=ic::CLOSE size=20/></button>
                     {move || match tab.get() {
                         Tab::Account => view! { <AccountTab/> }.into_any(),
+                        Tab::Notifications => view! { <NotificationsTab/> }.into_any(),
                         Tab::Security => view! { <SecurityTab/> }.into_any(),
                         Tab::Users => view! { <UsersTab/> }.into_any(),
                         Tab::Channels => view! { <ChannelsTab/> }.into_any(),
@@ -412,5 +415,122 @@ fn ChannelsTab() -> impl IntoView {
                 </Show>
             </div>
         </form>
+    }
+}
+
+#[component]
+fn NotificationsTab() -> impl IntoView {
+    use crate::notify;
+    let c = ctx();
+    let t = toasts();
+    let pref = RwSignal::new(notify::pref());
+    let previews = RwSignal::new(notify::previews());
+    let perm = RwSignal::new(notify::permission());
+    let push = RwSignal::new(net::store_get(notify::PUSH_KEY).unwrap_or_else(|| "off".into()));
+    let push_busy = RwSignal::new(false);
+    let server_push = move || c.info.get().map(|i| i.push).unwrap_or(false);
+    let set_pref = move |v: &'static str| {
+        net::store_set(notify::PREF_KEY, v);
+        pref.set(v.to_string());
+        if v != "off" && perm.get_untracked() != "granted" {
+            spawn_local(async move {
+                let p = notify::request_permission().await;
+                perm.set(p);
+            });
+        }
+    };
+    let set_push = move |scope: &'static str| {
+        if push_busy.get_untracked() {
+            return;
+        }
+        push_busy.set(true);
+        let http = c.http.get_value();
+        spawn_local(async move {
+            let res: Result<(), String> = async {
+                if scope == "off" {
+                    let _ =
+                        bunkr_core::call_ok::<()>(&http, "DELETE", "/api/push/subscribe", NO_BODY)
+                            .await;
+                    notify::push_unsubscribe().await;
+                    return Ok(());
+                }
+                if notify::permission() != "granted"
+                    && notify::request_permission().await != "granted"
+                {
+                    return Err("Notifications are blocked for this site".into());
+                }
+                let vapid: bunkr_proto::VapidResp =
+                    call_ok(&http, "GET", "/api/push/vapid", NO_BODY)
+                        .await
+                        .map_err(|e| e.to_string())?;
+                let endpoint = notify::push_subscribe(&vapid.public_key).await?;
+                call_ok::<()>(
+                    &http,
+                    "POST",
+                    "/api/push/subscribe",
+                    Some(&bunkr_proto::PushSubscribeReq {
+                        endpoint,
+                        scope: scope.into(),
+                    }),
+                )
+                .await
+                .map_err(|e| e.to_string())
+            }
+            .await;
+            match res {
+                Ok(()) => {
+                    net::store_set(notify::PUSH_KEY, scope);
+                    push.set(scope.into());
+                    t.ok(if scope == "off" {
+                        "Push turned off"
+                    } else {
+                        "Push turned on"
+                    });
+                }
+                Err(e) => t.err(e),
+            }
+            perm.set(notify::permission());
+            push_busy.set(false);
+        });
+    };
+    view! {
+        <h2>"Notifications"</h2>
+        <h3>"While Bunkr is open"</h3>
+        <div class="card">
+            <div class="seg seg-3">
+                <button type="button" class:active=move || pref.get() == "all" on:click=move |_| set_pref("all")>"All messages"</button>
+                <button type="button" class:active=move || pref.get() == "important" on:click=move |_| set_pref("important")>"DMs & @mentions"</button>
+                <button type="button" class:active=move || pref.get() == "off" on:click=move |_| set_pref("off")>"Off"</button>
+            </div>
+            <Show when=move || perm.get() == "denied">
+                <div class="notice notice-warn"><Icon svg=ic::ALERT size=18/><span>"Notifications are blocked in your browser settings for this site."</span></div>
+            </Show>
+            <label class="check">
+                <input type="checkbox" prop:checked=move || previews.get() on:change=move |e| {
+                    let on = event_target_checked(&e);
+                    net::store_set(notify::PREVIEW_KEY, if on { "1" } else { "0" });
+                    previews.set(on);
+                }/>
+                <span>"Show message text in notifications"</span>
+            </label>
+            <p class="muted small">"Off by default: your OS may show notification text on the lock screen and keep it in its notification history, outside Bunkr's encryption."</p>
+        </div>
+        <h3>"When Bunkr is closed (web push)"</h3>
+        <div class="card">
+            {move || if !notify::push_supported() {
+                view! { <p class="muted small">"Web push works in the browser version (installed to your home screen on iPhone). The desktop app notifies you while it's running."</p> }.into_any()
+            } else if !server_push() {
+                view! { <p class="muted small">"Push is disabled on this server."</p> }.into_any()
+            } else {
+                view! {
+                    <div class="seg seg-3">
+                        <button type="button" disabled=move || push_busy.get() class:active=move || push.get() == "all" on:click=move |_| set_push("all")>"Everything"</button>
+                        <button type="button" disabled=move || push_busy.get() class:active=move || push.get() == "dm" on:click=move |_| set_push("dm")>"DMs only"</button>
+                        <button type="button" disabled=move || push_busy.get() class:active=move || push.get() == "off" on:click=move |_| set_push("off")>"Off"</button>
+                    </div>
+                }.into_any()
+            }}
+            <p class="muted small">"Pushes are empty wake-up signals: they contain no text, sender or channel. Your device then shows a generic “new encrypted messages” notice. The push provider (Google, Mozilla, Apple or Microsoft) only learns that something arrived, and roughly when."</p>
+        </div>
     }
 }

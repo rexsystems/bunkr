@@ -17,6 +17,12 @@ const ICONS = {
   WIFI_OFF: "WifiDisconnected02Icon", LOADER: "Loading03Icon", ARROW_DOWN: "ArrowDown01Icon",
   SECURITY: "SecurityCheckIcon", LOCK_PASSWORD: "LockPasswordIcon", INFO: "InformationCircleIcon",
   HASHTAG: "HashtagIcon", TIMER: "Timer02Icon", QUANTUM: "AtomicPowerIcon",
+  REPLY: "ArrowTurnBackwardIcon", SMILE: "SmileIcon", ATTACH: "AttachmentIcon", IMAGE: "Image01Icon",
+  FILE: "File01Icon", DOWNLOAD: "Download04Icon", SEARCH: "Search01Icon", CALL: "Call02Icon",
+  VIDEO: "Video01Icon", MIC: "Mic02Icon", MIC_OFF: "MicOff02Icon", CAM_OFF: "VideoOffIcon",
+  SCREEN: "ComputerScreenShareIcon", HANGUP: "CallEnd01Icon", BELL: "Notification01Icon",
+  BELL_OFF: "NotificationOff01Icon", DM: "MessageLock01Icon", USER_ADD: "UserAdd01Icon",
+  BACK: "ArrowLeft01Icon", REFRESH: "Refresh01Icon",
 };
 const attr = { strokeWidth: "stroke-width", strokeLinecap: "stroke-linecap", strokeLinejoin: "stroke-linejoin",
   fillRule: "fill-rule", clipRule: "clip-rule" };

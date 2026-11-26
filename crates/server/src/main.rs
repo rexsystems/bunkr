@@ -230,7 +230,7 @@ async fn main() {
         ))
         .layer(SetResponseHeaderLayer::overriding(
             header::HeaderName::from_static("permissions-policy"),
-            HeaderValue::from_static("camera=(), microphone=(), geolocation=()"),
+            HeaderValue::from_static("camera=(self), microphone=(self), display-capture=(self), geolocation=(), payment=(), usb=()"),
         ))
         .layer(SetResponseHeaderLayer::overriding(
             header::HeaderName::from_static("cross-origin-opener-policy"),
