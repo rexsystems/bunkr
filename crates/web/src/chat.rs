@@ -1000,7 +1000,15 @@ fn fetch_file(
     spawn_local(async move {
         match Device::download_file(&http, &f).await {
             Ok(bytes) => {
-                if let Some(u) = object_url(&bytes, &f.mime) {
+                // Only allow-listed image types keep their type; everything
+                // else becomes an opaque download so a hostile file can never
+                // render as HTML on Bunkr's origin.
+                let mime = if inline_image(&f) {
+                    f.mime.as_str()
+                } else {
+                    "application/octet-stream"
+                };
+                if let Some(u) = object_url(&bytes, mime) {
                     OBJECT_URLS.with(|m| m.borrow_mut().insert(f.blob.clone(), u.clone()));
                     if then_save {
                         save_as(&u, &f.name);

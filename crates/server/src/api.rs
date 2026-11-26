@@ -37,6 +37,7 @@ pub struct Config {
     pub turn_urls: Vec<String>,
     pub stun_urls: Vec<String>,
     pub turn_secret: Option<String>,
+    pub max_storage: u64,
     /// How long a device waits for an online member before it may re-found.
     pub refound_after_secs: i64,
 }
@@ -50,6 +51,28 @@ pub struct AppState {
     pub setup_code: Arc<Mutex<Option<String>>>,
     pub limiter: Arc<Mutex<HashMap<String, (u32, Instant)>>>,
     pub push: Option<Arc<crate::push::Push>>,
+    /// Simple in-memory token buckets (never persisted): key -> (tokens, last refill).
+    pub buckets: Arc<Mutex<HashMap<String, (f64, Instant)>>>,
+}
+
+impl AppState {
+    /// Token bucket: `rate` per second, burst `burst`. True if allowed.
+    pub fn allow(&self, key: String, rate: f64, burst: f64) -> bool {
+        let mut m = self.buckets.lock().unwrap();
+        if m.len() > 100_000 {
+            m.clear();
+        }
+        let now = Instant::now();
+        let e = m.entry(key).or_insert((burst, now));
+        e.0 = (e.0 + now.duration_since(e.1).as_secs_f64() * rate).min(burst);
+        e.1 = now;
+        if e.0 >= 1.0 {
+            e.0 -= 1.0;
+            true
+        } else {
+            false
+        }
+    }
 }
 
 // ---------------- errors ----------------
@@ -309,6 +332,13 @@ fn record_ok(st: &AppState, key: &str) {
 }
 
 async fn register(State(st): State<AppState>, Json(req): Json<RegisterReq>) -> R<LoginResp> {
+    // Global signup throttle (no IPs are recorded): ~30/hour, burst 10.
+    if !st.allow("register".into(), 30.0 / 3600.0, 10.0) {
+        return Err(ApiErr::Status(
+            StatusCode::TOO_MANY_REQUESTS,
+            "Too many new accounts right now. Try again later.".into(),
+        ));
+    }
     let username = normalize_username(&req.username)
         .ok_or_else(|| ApiErr::bad("Username: 3-32 chars, a-z 0-9 _ . -"))?;
     if req.auth_key.0.len() != 32

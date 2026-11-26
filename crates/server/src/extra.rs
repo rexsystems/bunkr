@@ -126,6 +126,12 @@ async fn ephemeral(
     if req.data.0.len() > 64 * 1024 {
         return Err(ApiErr::bad("too large"));
     }
+    if !st.allow(format!("eph:{}", d.device_id), 20.0, 60.0) {
+        return Err(ApiErr::Status(
+            StatusCode::TOO_MANY_REQUESTS,
+            "slow down".into(),
+        ));
+    }
     let members = st
         .db
         .run(move |c| -> Result<Vec<i64>, ApiErr> {
@@ -181,18 +187,32 @@ async fn upload_blob(
             ),
         ));
     }
-    let member = st
+    if !st.allow(format!("blob:{}", d.user_id), 1.0, 30.0) {
+        return Err(ApiErr::Status(
+            StatusCode::TOO_MANY_REQUESTS,
+            "Too many uploads, slow down".into(),
+        ));
+    }
+    let (member, used) = st
         .db
-        .run(move |c| {
-            c.query_row(
+        .run(move |c| -> rusqlite::Result<(bool, i64)> {
+            let m = c.query_row(
                 "SELECT EXISTS(SELECT 1 FROM members WHERE channel_id = ? AND device_id = ?)",
                 params![ch, d.device_id],
                 |r| r.get::<_, bool>(0),
-            )
+            )?;
+            let used = c.query_row("SELECT COALESCE(SUM(size), 0) FROM blobs", [], |r| r.get(0))?;
+            Ok((m, used))
         })
         .await?;
     if !member {
         return Err(ApiErr::forbidden("not a member"));
+    }
+    if used as u64 + body.len() as u64 > st.cfg.max_storage {
+        return Err(ApiErr::Status(
+            StatusCode::INSUFFICIENT_STORAGE,
+            "This server's attachment storage is full".into(),
+        ));
     }
     let mut raw = [0u8; 16];
     rand::rngs::OsRng.fill_bytes(&mut raw);

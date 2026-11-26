@@ -128,11 +128,19 @@ async fn main() {
             turn_secret: std::env::var("BUNKR_TURN_SECRET")
                 .ok()
                 .filter(|s| !s.is_empty()),
+            max_storage: env("BUNKR_MAX_STORAGE_GB", "20")
+                .parse::<u64>()
+                .unwrap_or(20)
+                .max(1)
+                * 1024
+                * 1024
+                * 1024,
             refound_after_secs: env("BUNKR_REFOUND_SECS", "8").parse().unwrap_or(8),
         },
         secret: Arc::new(secret),
         setup_code: Arc::new(Mutex::new(setup_code)),
         limiter: Default::default(),
+        buckets: Default::default(),
         push: if env("BUNKR_PUSH", "on") == "off" {
             None
         } else {

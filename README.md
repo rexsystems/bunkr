@@ -6,7 +6,7 @@
 
 **A self-hosted, Discord-style group chat where the server knows nothing.**
 
-Post-quantum MLS end-to-end encryption · 100% Rust · Web, mobile browser, macOS, Linux, Windows (x64 + ARM)
+Post-quantum MLS end-to-end encryption · 100% Rust · Web, phone, macOS, Linux, Windows, Android (x64 + ARM)
 
 </div>
 
@@ -15,6 +15,18 @@ Post-quantum MLS end-to-end encryption · 100% Rust · Web, mobile browser, macO
   &nbsp;
   <img src="docs/mobile.png" width="20%" alt="Bunkr on a phone">
 </p>
+
+## Features
+
+- **Public channels** that everyone is in, and **private DMs**. Each one is its own end-to-end encrypted MLS group.
+- **Replies, edits, deletes, reactions, @mentions**, and a typing indicator that is encrypted too.
+- **Encrypted files and images.** They are encrypted on your device before upload, with drag & drop and paste.
+- **Voice and video calls with screen sharing.** Peer-to-peer WebRTC, with call setup signed and encrypted through MLS.
+- **Search** that runs on your device only, because the server can't search what it can't read.
+- **Notifications.** In-app or native while Bunkr is open, and empty web push while it's closed (no text, sender or channel).
+- **Disappearing messages** per channel (set by the admin) or per DM (set by either person).
+- **Admin tools:** ban, delete accounts, promote admins, manage channels, close registration, remove messages.
+- **Password change = total reset** of keys, devices and history.
 
 ---
 
@@ -36,11 +48,13 @@ BUNKR_DOMAIN=chat.example.com docker compose --profile tls up -d --build
 
 Caddy fetches and renews the Let's Encrypt certificate for you.
 
-Or run the guided installer, which asks for the domain and prints the setup code:
+Or run the guided installer. It asks for the domain, can also set up a TURN relay for calls, and prints the setup code:
 
 ```bash
 ./install.sh
 ```
+
+**Calls across any network:** calls are peer-to-peer. To make them work behind strict NATs and mobile networks, run the bundled TURN relay. `./install.sh` sets this up for you. To do it by hand, set `BUNKR_TURN_SECRET` (a long random string), `BUNKR_TURN_URLS=turn:chat.example.com:3478?transport=udp,turn:chat.example.com:3478?transport=tcp` and `BUNKR_STUN_URLS=stun:chat.example.com:3478`, add `--profile calls`, and open UDP/TCP `3478` and UDP `49160-49260`. The relay only ever forwards encrypted media, and it refuses to relay into private networks.
 
 ### First login = admin
 
@@ -64,6 +78,11 @@ Open Bunkr, enter the code and create the first account. That account is the **a
 | `BUNKR_RETENTION_DAYS` | `30` | Ciphertext older than this is deleted from the server |
 | `BUNKR_PORT` | `8080` | Host port (plain HTTP mode) |
 | `BUNKR_SETUP_CODE` | random | Fixed first-run setup code, if you prefer to set your own |
+| `BUNKR_MAX_UPLOAD_MB` | `25` | Max size of one encrypted attachment |
+| `BUNKR_MAX_STORAGE_GB` | `20` | Total attachment storage on the server |
+| `BUNKR_TURN_URLS` / `BUNKR_STUN_URLS` / `BUNKR_TURN_SECRET` | – | TURN/STUN relay for calls (see above) |
+| `BUNKR_PUSH` | `on` | `off` disables web push |
+| `BUNKR_PUSH_CONTACT` | `mailto:admin@<domain>` | Contact sent to push services (VAPID) |
 
 Put them in a `.env` file next to `docker-compose.yml`, or prefix the command with them.
 
@@ -80,8 +99,23 @@ Put them in a `.env` file next to `docker-compose.yml`, or prefix the command wi
 | **macOS** (Apple Silicon + Intel) | `.dmg` from [Releases](../../releases) |
 | **Windows** (x64 + ARM64) | `.msi` / `-setup.exe` from Releases |
 | **Linux** (x64 + ARM64) | `.AppImage` / `.deb` / `.rpm` from Releases |
+| **Android** | `bunkr-android.apk` from Releases |
+| **iPhone / iPad** | Open your server in Safari → Share → **Add to Home Screen**. Push works from the home-screen app (iOS 16.4+). |
 
-The desktop apps are a thin [Tauri](https://tauri.app) shell around the same Rust/WASM client. On first launch, enter your server address. To build the apps, push a tag (`git tag v0.1.0 && git push --tags`). GitHub Actions then builds all six targets into a draft release.
+The desktop and Android apps are a thin [Tauri](https://tauri.app) shell around the same Rust/WASM client. They add native notifications, microphone/camera access and a banner when a new release is out. On first launch, enter your server address.
+
+**Release:** `git tag v0.2.0 && git push --tags`. GitHub Actions builds all platforms into a draft release.
+
+#### Signing (optional, do it once)
+Unsigned builds work, but macOS and Windows warn on first open. The Android APK is signed with a throwaway key until you add a real one, so updates need a reinstall. Add these repository secrets and the workflow uses them automatically:
+
+| Platform | Secrets |
+|---|---|
+| Android | `ANDROID_KEYSTORE_B64` (`base64 -w0 release.jks`), `ANDROID_KEYSTORE_PASSWORD` (key alias `bunkr`) |
+| macOS | `APPLE_CERTIFICATE`, `APPLE_CERTIFICATE_PASSWORD`, `APPLE_SIGNING_IDENTITY`, `APPLE_ID`, `APPLE_PASSWORD`, `APPLE_TEAM_ID` ([Tauri guide](https://v2.tauri.app/distribute/sign/macos/)) |
+| Windows | a code-signing certificate ([Tauri guide](https://v2.tauri.app/distribute/sign/windows/)) |
+
+Create the Android key with `keytool -genkeypair -keystore release.jks -alias bunkr -keyalg RSA -keysize 4096 -validity 10000`.
 
 ---
 
@@ -114,8 +148,16 @@ Then you log in fresh with the new password, under a new identity. **There is no
 
 If a session is revoked (password changed elsewhere, logout, ban), the app **wipes its local vault immediately**.
 
+### Calls
+Call setup (SDP offers/answers and ICE candidates) is sent as **MLS-encrypted, never-stored** messages from verified devices only. That means the DTLS fingerprints in it are authenticated end-to-end, so the media (DTLS-SRTP) can't be intercepted by the server or the TURN relay. Calls are a peer-to-peer mesh of up to 8 people. Without a TURN relay, peers see each other's IP addresses.
+
+### Files
+Each attachment gets a fresh random key (XChaCha20-Poly1305). The key travels only inside the MLS message, so the server stores opaque blobs. Only members of the conversation can download them, only the sender can delete them, and retention applies to them too.
+
 ### Minimal data
 The server stores **only**: username, password-hash-of-a-derived-key, salt, public identity key, encrypted account key, device public keys, and channel ciphertext.
+
+It also stores, for web push only, the push endpoint of the devices that opted in. Pushes contain **no payload at all**.
 
 It does **not** store: who sent a message, IP addresses, emails, phone numbers, user agents, or exact timestamps (only the hour, for retention). It writes no request logs. Ciphertext is deleted after `BUNKR_RETENTION_DAYS`, or sooner in channels with **disappearing messages**.
 
@@ -123,7 +165,7 @@ It does **not** store: who sent a message, IP addresses, emails, phone numbers, 
 Everything local (MLS state, keys, message cache, session token) lives in an encrypted **vault** (XChaCha20-Poly1305 with the master key). You need your password to unlock it every time the app opens. The **Panic** button wipes it instantly.
 
 ### Hardening
-Strict CSP (no inline scripts, no third-party anything), `frame-ancestors 'none'`, `no-referrer`, a login rate limiter, constant-time comparisons, salts that don't reveal whether an account exists, and a non-root, read-only distroless container.
+Strict CSP (no inline scripts, no third-party anything), `frame-ancestors 'none'`, `no-referrer`, rate limits on logins, signups, uploads and realtime signals, constant-time comparisons, salts that don't reveal whether an account exists, and a non-root, read-only distroless container. Push endpoints are restricted to the real push services, so the server can't be used for SSRF. The TURN relay refuses private and loopback peers. Downloaded files are never rendered on Bunkr's origin: only allow-listed image types are shown inline, and everything else is an opaque download.
 
 > [!WARNING]
 > Bunkr has **not** been independently audited. It is built on well-reviewed libraries (OpenMLS, RustCrypto), and the protocol is covered by end-to-end tests. Until an audit happens, treat it as "very strong, unaudited".

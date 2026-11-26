@@ -63,7 +63,12 @@ impl Drop for Server {
 
 async fn start_server(refound_secs: u32) -> Server {
     let dir = tempfile::tempdir().unwrap();
-    let port = 20000 + (std::process::id() % 20000) as u16 + refound_secs as u16 % 7;
+    // Ask the OS for a free port (tests run in parallel).
+    let port = std::net::TcpListener::bind("127.0.0.1:0")
+        .unwrap()
+        .local_addr()
+        .unwrap()
+        .port();
     let bin = concat!(
         env!("CARGO_MANIFEST_DIR"),
         "/../../target/debug/bunkr-server"
