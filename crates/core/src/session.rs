@@ -50,7 +50,11 @@ impl Vault {
             server: server.to_string(),
             username: dev.username.clone(),
             salt: B64(salt.to_vec()),
-            sealed: B64(crypto::seal(&keys.master_key, b"bunkr/vault/v1", &dev.export())),
+            sealed: B64(crypto::seal(
+                &keys.master_key,
+                b"bunkr/vault/v1",
+                &dev.export(),
+            )),
         }
     }
 
@@ -62,7 +66,11 @@ impl Vault {
 
     /// Re-seal with already-derived keys (no Argon2 on every save).
     pub fn reseal(&mut self, keys: &PasswordKeys, dev: &Device) {
-        self.sealed = B64(crypto::seal(&keys.master_key, b"bunkr/vault/v1", &dev.export()));
+        self.sealed = B64(crypto::seal(
+            &keys.master_key,
+            b"bunkr/vault/v1",
+            &dev.export(),
+        ));
     }
 }
 
@@ -141,7 +149,9 @@ async fn finish_login(
 ) -> Result<Device> {
     let account = Account::open(&keys.master_key, &resp.key_blob.0)?;
     if account.public() != resp.account_pk.0 {
-        return Err(Error::Other("Server returned a mismatched identity key".into()));
+        return Err(Error::Other(
+            "Server returned a mismatched identity key".into(),
+        ));
     }
     http.set_token(Some(resp.token.clone()));
     let signer = device::new_signer()?;

@@ -237,15 +237,18 @@ impl Device {
             generation: self.generation,
             token: self.token.clone(),
             signer: B64(serde_json::to_vec(&self.signer).expect("json")),
-            credential: B64(
-                self.credential
-                    .credential
-                    .tls_serialize_detached()
-                    .expect("tls"),
-            ),
+            credential: B64(self
+                .credential
+                .credential
+                .tls_serialize_detached()
+                .expect("tls")),
             storage,
             chans: self.chans.clone(),
-            pins: self.pins.iter().map(|(k, v)| (*k, B64(v.clone()))).collect(),
+            pins: self
+                .pins
+                .iter()
+                .map(|(k, v)| (*k, B64(v.clone())))
+                .collect(),
             trust: self.trust.clone(),
             users: self.users.values().cloned().collect(),
             changed: self.changed.clone(),
@@ -336,9 +339,7 @@ impl Device {
         let ok = self
             .pins
             .get(&body.u)
-            .map(|pk| {
-                crypto::verify_sig(pk, &proto::device_binding(body.u, sig_key), &body.s.0)
-            })
+            .map(|pk| crypto::verify_sig(pk, &proto::device_binding(body.u, sig_key), &body.s.0))
             .unwrap_or(false);
         self.trust.insert(tkey(body.u, body.d), ok);
         ok.then_some(body)
@@ -354,9 +355,17 @@ impl Device {
         (0..n)
             .map(|_| {
                 let kp = KeyPackage::builder()
-                    .build(CIPHERSUITE, &self.provider, &self.signer, self.credential.clone())
+                    .build(
+                        CIPHERSUITE,
+                        &self.provider,
+                        &self.signer,
+                        self.credential.clone(),
+                    )
                     .map_err(Error::mls)?;
-                Ok(B64(kp.key_package().tls_serialize_detached().map_err(Error::mls)?))
+                Ok(B64(kp
+                    .key_package()
+                    .tls_serialize_detached()
+                    .map_err(Error::mls)?))
             })
             .collect()
     }
@@ -377,7 +386,8 @@ impl Device {
                     // Old devices are gone; re-pin and flag it in the UI.
                     self.pins.insert(u.id, u.account_pk.0.clone());
                     self.changed.insert(u.id, now_ms);
-                    self.trust.retain(|k, _| !k.starts_with(&format!("{}:", u.id)));
+                    self.trust
+                        .retain(|k, _| !k.starts_with(&format!("{}:", u.id)));
                 }
                 _ => {}
             }
@@ -475,8 +485,13 @@ impl Device {
                     self.found(http, c.id, c.generation, now_ms).await?;
                 } else if c.is_member && !c.has_welcome {
                     // Server thinks we are in but we lost the group: ask again.
-                    call_ok::<()>(http, "POST", &format!("/api/channels/{}/rejoin", c.id), NO_BODY)
-                        .await?;
+                    call_ok::<()>(
+                        http,
+                        "POST",
+                        &format!("/api/channels/{}/rejoin", c.id),
+                        NO_BODY,
+                    )
+                    .await?;
                 }
             }
             if self.groups.contains_key(&c.id) {
@@ -520,7 +535,12 @@ impl Device {
         ch.last_seq = f.seq;
         ch.own.clear();
         self.trust.insert(tkey(self.user_id, self.device_id), true);
-        self.system(cid, f.seq, now_ms, "New end-to-end encrypted session started");
+        self.system(
+            cid,
+            f.seq,
+            now_ms,
+            "New end-to-end encrypted session started",
+        );
         Ok(())
     }
 
@@ -578,7 +598,12 @@ impl Device {
     }
 
     /// Pull and process every new log entry of a channel.
-    pub async fn sync_channel(&mut self, http: &impl Http, cid: ChannelId, now_ms: i64) -> Result<()> {
+    pub async fn sync_channel(
+        &mut self,
+        http: &impl Http,
+        cid: ChannelId,
+        now_ms: i64,
+    ) -> Result<()> {
         loop {
             let after = self.chans.entry(cid).or_default().last_seq;
             let log: proto::LogResp = call_ok(
@@ -593,8 +618,19 @@ impl Device {
                 // no longer be advanced. Start over with a fresh join.
                 self.drop_group(cid);
                 self.chans.entry(cid).or_default().last_seq = log.floor - 1;
-                self.system(cid, log.floor - 1, now_ms, "Was offline too long; re-joining");
-                call_ok::<()>(http, "POST", &format!("/api/channels/{cid}/rejoin"), NO_BODY).await?;
+                self.system(
+                    cid,
+                    log.floor - 1,
+                    now_ms,
+                    "Was offline too long; re-joining",
+                );
+                call_ok::<()>(
+                    http,
+                    "POST",
+                    &format!("/api/channels/{cid}/rejoin"),
+                    NO_BODY,
+                )
+                .await?;
                 return Ok(());
             }
             if log.entries.is_empty() {
@@ -688,7 +724,10 @@ impl Device {
                     .add_proposals()
                     .map(|p| {
                         let ln = p.add_proposal().key_package().leaf_node();
-                        (ln.credential().clone(), ln.signature_key().as_slice().to_vec())
+                        (
+                            ln.credential().clone(),
+                            ln.signature_key().as_slice().to_vec(),
+                        )
                     })
                     .collect();
                 let self_removed = staged.self_removed();
@@ -706,7 +745,12 @@ impl Device {
     }
 
     /// Add devices that are waiting to join, and evict removed ones.
-    pub async fn handle_pending(&mut self, http: &impl Http, cid: ChannelId, now_ms: i64) -> Result<()> {
+    pub async fn handle_pending(
+        &mut self,
+        http: &impl Http,
+        cid: ChannelId,
+        now_ms: i64,
+    ) -> Result<()> {
         for _attempt in 0..3 {
             if !self.groups.contains_key(&cid) {
                 return Ok(());
@@ -715,8 +759,13 @@ impl Device {
             if !self.groups.contains_key(&cid) {
                 return Ok(());
             }
-            let p: proto::PendingResp =
-                call_ok(http, "GET", &format!("/api/channels/{cid}/pending"), NO_BODY).await?;
+            let p: proto::PendingResp = call_ok(
+                http,
+                "GET",
+                &format!("/api/channels/{cid}/pending"),
+                NO_BODY,
+            )
+            .await?;
             if p.joins.is_empty() && p.removals.is_empty() {
                 return Ok(());
             }
@@ -776,8 +825,13 @@ impl Device {
                 }
             }
             if !dismiss.joins.is_empty() || !dismiss.removals.is_empty() {
-                call_ok::<()>(http, "POST", &format!("/api/channels/{cid}/dismiss"), Some(&dismiss))
-                    .await?;
+                call_ok::<()>(
+                    http,
+                    "POST",
+                    &format!("/api/channels/{cid}/dismiss"),
+                    Some(&dismiss),
+                )
+                .await?;
             }
             if kps.is_empty() && leaves.is_empty() {
                 return Ok(());
@@ -811,8 +865,13 @@ impl Device {
                 added,
                 removed,
             };
-            let r: Reply<proto::SendResp> =
-                call(http, "POST", &format!("/api/channels/{cid}/commit"), Some(&req)).await?;
+            let r: Reply<proto::SendResp> = call(
+                http,
+                "POST",
+                &format!("/api/channels/{cid}/commit"),
+                Some(&req),
+            )
+            .await?;
             match r {
                 Reply::Ok(s) => {
                     self.chans.entry(cid).or_default().own.insert(s.seq);
@@ -865,8 +924,13 @@ impl Device {
                 generation,
                 data: B64(out.tls_serialize_detached().map_err(Error::mls)?),
             };
-            let r: Reply<proto::SendResp> =
-                call(http, "POST", &format!("/api/channels/{cid}/send"), Some(&req)).await?;
+            let r: Reply<proto::SendResp> = call(
+                http,
+                "POST",
+                &format!("/api/channels/{cid}/send"),
+                Some(&req),
+            )
+            .await?;
             if let Reply::Ok(s) = r {
                 let ch = self.chans.entry(cid).or_default();
                 ch.own.insert(s.seq);
@@ -912,6 +976,12 @@ impl Device {
     pub fn epoch_code(&self, cid: ChannelId) -> Option<String> {
         let g = self.groups.get(&cid)?;
         let a = g.epoch_authenticator().as_slice();
-        Some(crypto::fingerprint(a).split(' ').take(4).collect::<Vec<_>>().join(" "))
+        Some(
+            crypto::fingerprint(a)
+                .split(' ')
+                .take(4)
+                .collect::<Vec<_>>()
+                .join(" "),
+        )
     }
 }

@@ -70,7 +70,11 @@ pub async fn call<T: DeserializeOwned>(
         .map_err(Error::Network)?;
     match status {
         200..=299 => {
-            let bytes = if bytes.is_empty() { b"null".to_vec() } else { bytes };
+            let bytes = if bytes.is_empty() {
+                b"null".to_vec()
+            } else {
+                bytes
+            };
             serde_json::from_slice(&bytes)
                 .map(Reply::Ok)
                 .map_err(|e| Error::Other(format!("bad response from {path}: {e}")))

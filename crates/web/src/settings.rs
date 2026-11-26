@@ -226,9 +226,22 @@ fn UsersTab() -> impl IntoView {
     let toggle_reg = move |open: bool| {
         let http = c.http.get_value();
         spawn_local(async move {
-            match call_ok::<()>(&http, "POST", "/api/admin/settings", Some(&SettingsReq { registration_open: open })).await {
+            match call_ok::<()>(
+                &http,
+                "POST",
+                "/api/admin/settings",
+                Some(&SettingsReq {
+                    registration_open: open,
+                }),
+            )
+            .await
+            {
                 Ok(()) => {
-                    t.ok(if open { "Registration opened" } else { "Registration closed" });
+                    t.ok(if open {
+                        "Registration opened"
+                    } else {
+                        "Registration closed"
+                    });
                     reload();
                 }
                 Err(e) => t.err(e.to_string()),
@@ -323,13 +336,27 @@ fn ChannelsTab() -> impl IntoView {
     let del = move |id: i64| {
         let http = c.http.get_value();
         spawn_local(async move {
-            match call_ok::<()>(&http, "DELETE", &format!("/api/admin/channels/{id}"), NO_BODY).await {
+            match call_ok::<()>(
+                &http,
+                "DELETE",
+                &format!("/api/admin/channels/{id}"),
+                NO_BODY,
+            )
+            .await
+            {
                 Ok(()) => t.ok("Channel deleted"),
                 Err(e) => t.err(e.to_string()),
             }
         });
     };
-    const TTLS: [(i64, &str); 6] = [(0, "Off"), (1, "1 hour"), (24, "1 day"), (168, "7 days"), (720, "30 days"), (2160, "90 days")];
+    const TTLS: [(i64, &str); 6] = [
+        (0, "Off"),
+        (1, "1 hour"),
+        (24, "1 day"),
+        (168, "7 days"),
+        (720, "30 days"),
+        (2160, "90 days"),
+    ];
     view! {
         <h2>"Channels"</h2>
         <p class="muted small">"Every user is in every channel. Each channel is its own MLS group."</p>

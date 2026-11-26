@@ -15,9 +15,7 @@ pub struct Hub {
 
 impl Hub {
     pub fn register(&self, device: DeviceId, tx: UnboundedSender<ServerWs>) -> u64 {
-        let id = self
-            .next
-            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let id = self.next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         self.inner
             .lock()
             .unwrap()

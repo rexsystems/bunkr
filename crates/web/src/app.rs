@@ -89,7 +89,9 @@ fn start_engine(
         keys,
         vault,
         c.ui,
-        info.as_ref().map(|i| i.name.clone()).unwrap_or_else(|| "Bunkr".into()),
+        info.as_ref()
+            .map(|i| i.name.clone())
+            .unwrap_or_else(|| "Bunkr".into()),
         info.map(|i| i.retention_days).unwrap_or(30),
     );
     let phase = c.phase;
@@ -248,7 +250,11 @@ fn AuthScreen(notice: Option<String>) -> impl IntoView {
     });
 
     let connect_server = move || {
-        let url = server.get_untracked().trim().trim_end_matches('/').to_string();
+        let url = server
+            .get_untracked()
+            .trim()
+            .trim_end_matches('/')
+            .to_string();
         let url = if url.is_empty() || url.starts_with("http") {
             url
         } else {
@@ -338,7 +344,12 @@ fn AuthScreen(notice: Option<String>) -> impl IntoView {
                                         placeholder="chat.example.com"
                                         prop:value=move || server.get()
                                         on:input=move |e| server.set(event_target_value(&e))
-                                        on:change=move |_| connect_server()
+                                        on:keydown=move |e: web_sys::KeyboardEvent| {
+                                            if e.key() == "Enter" {
+                                                e.prevent_default();
+                                                connect_server();
+                                            }
+                                        }
                                     />
                                 </div>
                                 <button type="button" class="btn btn-ghost" on:click=move |_| connect_server()>"Connect"</button>

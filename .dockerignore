@@ -1,0 +1,8 @@
+target
+**/target
+crates/web/dist
+desktop/src-tauri/gen
+data
+.git
+*.db
+*.db-*

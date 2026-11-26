@@ -36,16 +36,22 @@ async fn main() {
                 .unwrap_or_else(|_| "bunkr_server=info".into()),
         )
         .with_target(false)
+        .with_ansi(std::io::IsTerminal::is_terminal(&std::io::stdout()))
         .init();
 
     let data = PathBuf::from(env("BUNKR_DATA", "./data"));
     std::fs::create_dir_all(&data).expect("create data dir");
     let db = db::Db::open(&data.join("bunkr.db")).expect("open database");
 
-    let retention_days: u32 = env("BUNKR_RETENTION_DAYS", "30").parse().unwrap_or(30).max(1);
+    let retention_days: u32 = env("BUNKR_RETENTION_DAYS", "30")
+        .parse()
+        .unwrap_or(30)
+        .max(1);
     let name = env("BUNKR_NAME", "Bunkr");
     let web_dir = PathBuf::from(env("BUNKR_WEB_DIR", "./web/dist"));
-    let bind: SocketAddr = env("BUNKR_BIND", "0.0.0.0:8080").parse().expect("BUNKR_BIND");
+    let bind: SocketAddr = env("BUNKR_BIND", "0.0.0.0:8080")
+        .parse()
+        .expect("BUNKR_BIND");
 
     let (secret, setup_code) = db
         .run(|c| -> rusqlite::Result<([u8; 32], Option<String>)> {

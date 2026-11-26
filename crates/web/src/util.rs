@@ -3,7 +3,11 @@ use wasm_bindgen::JsValue;
 
 /// Inline Hugeicon.
 #[component]
-pub fn Icon(svg: &'static str, #[prop(default = 20)] size: u32, #[prop(optional)] class: &'static str) -> impl IntoView {
+pub fn Icon(
+    svg: &'static str,
+    #[prop(default = 20)] size: u32,
+    #[prop(optional)] class: &'static str,
+) -> impl IntoView {
     view! {
         <svg
             class=format!("icon {class}")
@@ -123,7 +127,12 @@ pub fn fmt_day(ms: i64) -> String {
         "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
     ];
     let d = date(ms);
-    format!("{} {} {}", d.get_date(), M[d.get_month() as usize % 12], d.get_full_year())
+    format!(
+        "{} {} {}",
+        d.get_date(),
+        M[d.get_month() as usize % 12],
+        d.get_full_year()
+    )
 }
 
 pub fn hue(name: &str) -> u32 {

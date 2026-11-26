@@ -300,15 +300,25 @@ pub enum ServerWs {
     Ready,
     Pong,
     /// New entries in a channel log.
-    Log { channel_id: ChannelId, seq: Seq },
+    Log {
+        channel_id: ChannelId,
+        seq: Seq,
+    },
     /// Someone needs to be added to / removed from a channel group.
-    Pending { channel_id: ChannelId },
+    Pending {
+        channel_id: ChannelId,
+    },
     /// A welcome is waiting for this device.
-    Welcome { channel_id: ChannelId },
+    Welcome {
+        channel_id: ChannelId,
+    },
     /// Channel list / directory changed.
     State,
     /// A log entry was deleted by a moderator.
-    Deleted { channel_id: ChannelId, seq: Seq },
+    Deleted {
+        channel_id: ChannelId,
+        seq: Seq,
+    },
     /// This session is dead (logout, ban, password change). Wipe everything.
     Revoked,
 }
@@ -362,8 +372,7 @@ pub fn device_binding(user_id: UserId, sig_pk: &[u8]) -> Vec<u8> {
 pub fn normalize_username(raw: &str) -> Option<String> {
     let u = raw.trim().to_lowercase();
     let ok = (3..=MAX_USERNAME).contains(&u.chars().count())
-        && u
-            .chars()
+        && u.chars()
             .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || "_.-".contains(c));
     ok.then_some(u)
 }

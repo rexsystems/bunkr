@@ -28,7 +28,6 @@ use crate::hub::Hub;
 pub const MAX_DEVICES_PER_USER: i64 = 10;
 pub const MAX_KEY_PACKAGES: i64 = 200;
 
-
 #[derive(Clone)]
 pub struct Config {
     pub name: String,
@@ -225,7 +224,10 @@ pub fn router() -> Router<AppState> {
         .route("/api/admin/users/{id}/admin", post(admin_toggle_admin))
         .route("/api/admin/users/{id}", delete(admin_delete_user))
         .route("/api/admin/channels", post(admin_create_channel))
-        .route("/api/admin/channels/{id}", put(admin_update_channel).delete(admin_delete_channel))
+        .route(
+            "/api/admin/channels/{id}",
+            put(admin_update_channel).delete(admin_delete_channel),
+        )
         .route("/api/admin/log/{seq}", delete(admin_delete_entry))
         .route("/api/admin/settings", post(admin_settings))
 }
@@ -253,8 +255,10 @@ async fn prelogin(State(st): State<AppState>, Json(req): Json<PreloginReq>) -> R
     let salt: Option<Vec<u8>> = st
         .db
         .run(move |c| {
-            c.query_row("SELECT salt FROM users WHERE username = ?", [&u2], |r| r.get(0))
-                .optional()
+            c.query_row("SELECT salt FROM users WHERE username = ?", [&u2], |r| {
+                r.get(0)
+            })
+            .optional()
         })
         .await?;
     // Unknown users get a stable fake salt: no account enumeration.
@@ -446,7 +450,11 @@ async fn register_device(
             )?;
             // The account key must vouch for the device. Clients enforce this
             // too; checking here keeps junk out.
-            if !verify_ed25519(&pk, &device_binding(s.user_id, &req.sig_pk.0), &req.account_sig.0) {
+            if !verify_ed25519(
+                &pk,
+                &device_binding(s.user_id, &req.sig_pk.0),
+                &req.account_sig.0,
+            ) {
                 return Err(ApiErr::bad("bad device signature"));
             }
             let n: i64 = tx.query_row(
@@ -506,9 +514,15 @@ async fn register_device(
 
 fn verify_ed25519(pk: &[u8], msg: &[u8], sig: &[u8]) -> bool {
     use ed25519_dalek::{Signature, Verifier, VerifyingKey};
-    let Ok(pk) = <[u8; 32]>::try_from(pk) else { return false };
-    let Ok(vk) = VerifyingKey::from_bytes(&pk) else { return false };
-    let Ok(sig) = Signature::from_slice(sig) else { return false };
+    let Ok(pk) = <[u8; 32]>::try_from(pk) else {
+        return false;
+    };
+    let Ok(vk) = VerifyingKey::from_bytes(&pk) else {
+        return false;
+    };
+    let Ok(sig) = Signature::from_slice(sig) else {
+        return false;
+    };
     vk.verify(msg, &sig).is_ok()
 }
 
@@ -611,7 +625,11 @@ async fn upload_key_packages(
                 [d.device_id],
                 |r| r.get(0),
             )?;
-            for p in req.packages.iter().take((MAX_KEY_PACKAGES - n).max(0) as usize) {
+            for p in req
+                .packages
+                .iter()
+                .take((MAX_KEY_PACKAGES - n).max(0) as usize)
+            {
                 tx.execute(
                     "INSERT INTO key_packages(device_id, data) VALUES(?, ?)",
                     params![d.device_id, p.0],
@@ -631,7 +649,12 @@ async fn upload_key_packages(
 }
 
 /// Can `device` found channel `ch` right now?
-fn may_found(st: &AppState, c: &rusqlite::Connection, ch: i64, device: i64) -> rusqlite::Result<bool> {
+fn may_found(
+    st: &AppState,
+    c: &rusqlite::Connection,
+    ch: i64,
+    device: i64,
+) -> rusqlite::Result<bool> {
     let members = db::channel_members(c, ch)?;
     if members.is_empty() {
         return Ok(true);
@@ -646,7 +669,9 @@ fn may_found(st: &AppState, c: &rusqlite::Connection, ch: i64, device: i64) -> r
             |r| r.get(0),
         )
         .optional()?;
-    Ok(since.map(|s| now_secs() - s >= st.cfg.refound_after_secs).unwrap_or(false))
+    Ok(since
+        .map(|s| now_secs() - s >= st.cfg.refound_after_secs)
+        .unwrap_or(false))
 }
 
 async fn state(State(st): State<AppState>, d: Dev) -> R<StateResp> {
@@ -747,11 +772,7 @@ async fn welcomes(State(st): State<AppState>, d: Dev) -> R<WelcomesResp> {
     Ok(Json(WelcomesResp { welcomes: w }))
 }
 
-async fn ack_welcome(
-    State(st): State<AppState>,
-    d: Dev,
-    Json(req): Json<AckWelcomeReq>,
-) -> R<()> {
+async fn ack_welcome(State(st): State<AppState>, d: Dev, Json(req): Json<AckWelcomeReq>) -> R<()> {
     let ch = req.channel_id;
     let requeued = st
         .db
@@ -844,7 +865,13 @@ async fn channel_log(
 }
 
 /// Shared epoch/generation/membership gate for sends and commits.
-fn gate(tx: &rusqlite::Connection, ch: i64, device: i64, epoch: i64, generation: i64) -> Result<(), ApiErr> {
+fn gate(
+    tx: &rusqlite::Connection,
+    ch: i64,
+    device: i64,
+    epoch: i64,
+    generation: i64,
+) -> Result<(), ApiErr> {
     let row: Option<(i64, i64)> = tx
         .query_row(
             "SELECT epoch, generation FROM channels WHERE id = ?",
@@ -895,8 +922,13 @@ async fn send(
             Ok((seq, members))
         })
         .await?;
-    st.hub
-        .send_many(&members, ServerWs::Log { channel_id: ch, seq });
+    st.hub.send_many(
+        &members,
+        ServerWs::Log {
+            channel_id: ch,
+            seq,
+        },
+    );
     Ok(Json(SendResp { seq }))
 }
 
@@ -973,8 +1005,13 @@ async fn commit(
             Ok((seq, members, welcomed))
         })
         .await?;
-    st.hub
-        .send_many(&members, ServerWs::Log { channel_id: ch, seq });
+    st.hub.send_many(
+        &members,
+        ServerWs::Log {
+            channel_id: ch,
+            seq,
+        },
+    );
     st.hub
         .send_many(&welcomed, ServerWs::Welcome { channel_id: ch });
     Ok(Json(SendResp { seq }))
@@ -1030,7 +1067,8 @@ async fn found(
         })
         .await?;
     st.hub.broadcast(ServerWs::State);
-    st.hub.send(d.device_id, ServerWs::Pending { channel_id: ch });
+    st.hub
+        .send(d.device_id, ServerWs::Pending { channel_id: ch });
     Ok(Json(res))
 }
 
@@ -1142,7 +1180,9 @@ async fn ws_loop(st: AppState, sock: WebSocket) {
     };
     let Ok(Some(sess)) = session_for_token(&st, &token).await else {
         let _ = tx
-            .send(Message::Text(serde_json::to_string(&ServerWs::Revoked).unwrap().into()))
+            .send(Message::Text(
+                serde_json::to_string(&ServerWs::Revoked).unwrap().into(),
+            ))
             .await;
         return;
     };
@@ -1150,7 +1190,9 @@ async fn ws_loop(st: AppState, sock: WebSocket) {
     let (etx, mut erx) = tokio::sync::mpsc::unbounded_channel();
     let id = st.hub.register(device, etx);
     let _ = tx
-        .send(Message::Text(serde_json::to_string(&ServerWs::Ready).unwrap().into()))
+        .send(Message::Text(
+            serde_json::to_string(&ServerWs::Ready).unwrap().into(),
+        ))
         .await;
     loop {
         tokio::select! {
@@ -1232,7 +1274,10 @@ async fn kick_user(st: &AppState, uid: i64, ban: Option<bool>, delete: bool) -> 
                 db::revoke_user(&tx, uid)?
             };
             if let Some(b) = ban {
-                tx.execute("UPDATE users SET banned = ? WHERE id = ?", params![b as i64, uid])?;
+                tx.execute(
+                    "UPDATE users SET banned = ? WHERE id = ?",
+                    params![b as i64, uid],
+                )?;
             }
             if delete {
                 tx.execute("DELETE FROM users WHERE id = ?", [uid])?;
@@ -1301,7 +1346,11 @@ async fn admin_create_channel(
     let (name, topic, ttl) = clean_channel(&req)?;
     st.db
         .run(move |c| -> Result<(), ApiErr> {
-            let pos: i64 = c.query_row("SELECT COALESCE(MAX(position), 0) + 1 FROM channels", [], |r| r.get(0))?;
+            let pos: i64 = c.query_row(
+                "SELECT COALESCE(MAX(position), 0) + 1 FROM channels",
+                [],
+                |r| r.get(0),
+            )?;
             c.execute(
                 "INSERT INTO channels(name, topic, position, ttl_hours) VALUES(?, ?, ?, ?)",
                 params![name, topic, pos, ttl],
@@ -1366,8 +1415,10 @@ async fn admin_delete_entry(State(st): State<AppState>, _a: Admin, Path(seq): Pa
         })
         .await?;
     let ch = ch.ok_or_else(ApiErr::not_found)?;
-    st.hub
-        .broadcast(ServerWs::Deleted { channel_id: ch, seq });
+    st.hub.broadcast(ServerWs::Deleted {
+        channel_id: ch,
+        seq,
+    });
     Ok(Json(()))
 }
 

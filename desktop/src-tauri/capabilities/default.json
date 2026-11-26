@@ -1,0 +1,7 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "default",
+  "description": "Bunkr exposes no native commands to the web view.",
+  "windows": ["main"],
+  "permissions": []
+}

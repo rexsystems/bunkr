@@ -43,7 +43,10 @@ pub fn MainView(handle: EngineHandle) -> impl IntoView {
     Effect::new(move |_| {
         let ui = c.ui.get();
         let sel = v.selected.get_untracked();
-        if sel.map(|s| !ui.channels.iter().any(|c| c.id == s)).unwrap_or(true) {
+        if sel
+            .map(|s| !ui.channels.iter().any(|c| c.id == s))
+            .unwrap_or(true)
+        {
             v.selected.set(ui.channels.first().map(|c| c.id));
         }
     });
@@ -334,7 +337,10 @@ fn grouped(msgs: Vec<MsgView>) -> Vec<Group> {
 fn MessageGroup(g: Group) -> impl IntoView {
     let c = ctx();
     let is_admin = move || c.ui.get().is_admin;
-    let day = g.day.clone().map(|d| view! { <div class="day-sep"><span>{d}</span></div> });
+    let day = g
+        .day
+        .clone()
+        .map(|d| view! { <div class="day-sep"><span>{d}</span></div> });
     if g.system {
         let items = g
             .items
@@ -342,7 +348,10 @@ fn MessageGroup(g: Group) -> impl IntoView {
             .map(|m| {
                 let (icon, text) = match &m.body {
                     MsgBody::System(t) => (ic::SHIELD, t.clone()),
-                    MsgBody::Undecryptable => (ic::ALERT, "A message couldn't be decrypted on this device".to_string()),
+                    MsgBody::Undecryptable => (
+                        ic::ALERT,
+                        "A message couldn't be decrypted on this device".to_string(),
+                    ),
                     MsgBody::Text(t) => (ic::INFO, t.clone()),
                 };
                 view! {
@@ -417,7 +426,8 @@ fn linkify(text: &str) -> impl IntoView {
     for (i, word) in text.split_inclusive(char::is_whitespace).enumerate() {
         let trimmed = word.trim_end();
         let tail = &word[trimmed.len()..];
-        if (trimmed.starts_with("https://") || trimmed.starts_with("http://")) && trimmed.len() > 10 {
+        if (trimmed.starts_with("https://") || trimmed.starts_with("http://")) && trimmed.len() > 10
+        {
             parts.push(
                 view! {
                     <a href=trimmed.to_string() target="_blank" rel="noopener noreferrer nofollow">{trimmed.to_string()}</a>
@@ -471,7 +481,9 @@ fn Composer() -> impl IntoView {
         if body.trim().is_empty() || sending.get_untracked() {
             return;
         }
-        let Some(cid) = v.selected.get_untracked() else { return };
+        let Some(cid) = v.selected.get_untracked() else {
+            return;
+        };
         let (tx, rx) = oneshot::channel();
         v.handle.get_value().send(Cmd::Send(cid, body, tx));
         text.set(String::new());
@@ -535,7 +547,9 @@ fn MembersPanel() -> impl IntoView {
     let v = view_ctx();
     let rows = move || {
         let ui = c.ui.get();
-        let Some(sel) = v.selected.get() else { return vec![] };
+        let Some(sel) = v.selected.get() else {
+            return vec![];
+        };
         let devs = ui.members.get(&sel).cloned().unwrap_or_default();
         let mut users: Vec<_> = ui
             .users

@@ -1,0 +1,45 @@
+# Self-host Bunkr:
+#   docker compose up -d --build                       -> http://SERVER:8080
+#   BUNKR_DOMAIN=chat.example.com docker compose --profile tls up -d --build
+#                                                      -> https://chat.example.com (auto TLS)
+# First-run admin setup code:  docker compose logs bunkr | grep -A2 "SETUP CODE"
+services:
+  bunkr:
+    build: .
+    image: bunkr:local
+    container_name: bunkr
+    restart: unless-stopped
+    environment:
+      BUNKR_NAME: ${BUNKR_NAME:-Bunkr}
+      BUNKR_RETENTION_DAYS: ${BUNKR_RETENTION_DAYS:-30}
+    volumes:
+      - bunkr-data:/data
+    ports:
+      - "${BUNKR_PORT:-8080}:8080"
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    logging:
+      driver: local
+      options: { max-size: "5m", max-file: "2" }
+
+  caddy:
+    profiles: ["tls"]
+    image: caddy:2-alpine
+    container_name: bunkr-caddy
+    restart: unless-stopped
+    depends_on: [bunkr]
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"
+    command: >
+      caddy reverse-proxy --from ${BUNKR_DOMAIN:-localhost} --to bunkr:8080
+    volumes:
+      - caddy-data:/data
+      - caddy-config:/config
+
+volumes:
+  bunkr-data:
+  caddy-data:
+  caddy-config:

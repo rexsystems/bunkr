@@ -64,7 +64,10 @@ impl Drop for Server {
 async fn start_server(refound_secs: u32) -> Server {
     let dir = tempfile::tempdir().unwrap();
     let port = 20000 + (std::process::id() % 20000) as u16 + refound_secs as u16 % 7;
-    let bin = concat!(env!("CARGO_MANIFEST_DIR"), "/../../target/debug/bunkr-server");
+    let bin = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../target/debug/bunkr-server"
+    );
     let child = Command::new(bin)
         .env("BUNKR_DATA", dir.path())
         .env("BUNKR_BIND", format!("127.0.0.1:{port}"))
@@ -104,18 +107,33 @@ impl Client {
         let (keys, salt, dev) = session::register(&http, user, pw, code.map(String::from))
             .await
             .unwrap();
-        Client { http, dev, keys, salt }
+        Client {
+            http,
+            dev,
+            keys,
+            salt,
+        }
     }
     async fn login(url: &str, user: &str, pw: &str) -> Result<Client, Error> {
         let http = ReqHttp::new(url);
         let (keys, salt, dev) = session::login(&http, user, pw).await?;
-        Ok(Client { http, dev, keys, salt })
+        Ok(Client {
+            http,
+            dev,
+            keys,
+            salt,
+        })
     }
     async fn tick(&mut self) -> Result<(), Error> {
         self.dev.tick(&self.http, NOW).await.map(|_| ())
     }
     fn chan(&self, name: &str) -> i64 {
-        self.dev.channels.iter().find(|c| c.name == name).unwrap().id
+        self.dev
+            .channels
+            .iter()
+            .find(|c| c.name == name)
+            .unwrap()
+            .id
     }
     fn texts(&self, name: &str) -> Vec<(String, String, bool)> {
         let cid = self.chan(name);
@@ -137,7 +155,10 @@ impl Client {
     }
     async fn send(&mut self, name: &str, text: &str) {
         let cid = self.chan(name);
-        self.dev.send_text(&self.http, cid, text, NOW).await.unwrap();
+        self.dev
+            .send_text(&self.http, cid, text, NOW)
+            .await
+            .unwrap();
     }
 }
 
@@ -156,13 +177,17 @@ async fn full_flow() {
 
     // Setup code is mandatory for the first (admin) account.
     let http = ReqHttp::new(&url);
-    assert!(session::register(&http, "mallory", "Sup3r-secret-pw", Some("WRONG".into()))
-        .await
-        .is_err());
+    assert!(
+        session::register(&http, "mallory", "Sup3r-secret-pw", Some("WRONG".into()))
+            .await
+            .is_err()
+    );
     // Weak passwords are refused client-side.
-    assert!(session::register(&http, "alice", "short", Some("SETUP123".into()))
-        .await
-        .is_err());
+    assert!(
+        session::register(&http, "alice", "short", Some("SETUP123".into()))
+            .await
+            .is_err()
+    );
 
     let mut alice = Client::register(&url, "alice", "Alice-pass-1234", Some("SETUP123")).await;
     alice.tick().await.unwrap();
@@ -191,8 +216,14 @@ async fn full_flow() {
     let raw = std::fs::read(&srv.db).unwrap();
     let wal = std::fs::read(srv.db.with_extension("db-wal")).unwrap_or_default();
     for hay in [&raw, &wal] {
-        assert!(!hay.windows(14).any(|w| w == b"this is secret"), "plaintext leaked");
-        assert!(!hay.windows(9).any(|w| w == b"hey alice"), "plaintext leaked");
+        assert!(
+            !hay.windows(14).any(|w| w == b"this is secret"),
+            "plaintext leaked"
+        );
+        assert!(
+            !hay.windows(9).any(|w| w == b"hey alice"),
+            "plaintext leaked"
+        );
     }
 
     // A third user; both existing members race to add her.
@@ -204,7 +235,10 @@ async fn full_flow() {
     assert!(alice.texts("general").iter().any(|t| t.1 == "carol here"));
     assert!(bob.texts("general").iter().any(|t| t.1 == "carol here"));
     // Carol cannot read what was said before she joined.
-    assert!(!carol.texts("general").iter().any(|t| t.1.contains("secret")));
+    assert!(!carol
+        .texts("general")
+        .iter()
+        .any(|t| t.1.contains("secret")));
 
     // Device state survives a reload (export/import through the vault).
     let vault = session::Vault::seal(&url, &alice.keys, &alice.salt, &alice.dev);
@@ -225,13 +259,24 @@ async fn full_flow() {
     assert!(Client::login(&url, "bob", "Bob-pass-12345").await.is_err());
     settle(&mut [&mut alice, &mut carol]).await;
     let devs: Vec<_> = alice.dev.member_devices(general);
-    assert!(!devs.iter().any(|(_, d, _)| *d == bob.dev.device_id), "old bob device evicted");
+    assert!(
+        !devs.iter().any(|(_, d, _)| *d == bob.dev.device_id),
+        "old bob device evicted"
+    );
 
-    let mut bob2 = Client::login(&url, "bob", "Bob-new-pass-999").await.unwrap();
+    let mut bob2 = Client::login(&url, "bob", "Bob-new-pass-999")
+        .await
+        .unwrap();
     settle(&mut [&mut bob2, &mut alice, &mut carol]).await;
     assert!(bob2.dev.is_joined(general));
-    assert!(bob2.texts("general").is_empty(), "fresh identity has no history");
-    assert!(alice.dev.changed.contains_key(&bob2.dev.user_id), "alice notices bob's key change");
+    assert!(
+        bob2.texts("general").is_empty(),
+        "fresh identity has no history"
+    );
+    assert!(
+        alice.dev.changed.contains_key(&bob2.dev.user_id),
+        "alice notices bob's key change"
+    );
     bob2.send("general", "new bob").await;
     settle(&mut [&mut alice, &mut carol]).await;
     assert!(alice
@@ -247,7 +292,9 @@ async fn full_flow() {
         .unwrap();
     assert_eq!(r.0, 200);
     assert!(matches!(carol.tick().await, Err(Error::Revoked)));
-    assert!(Client::login(&url, "carol", "Carol-pass-1234").await.is_err());
+    assert!(Client::login(&url, "carol", "Carol-pass-1234")
+        .await
+        .is_err());
     settle(&mut [&mut alice, &mut bob2]).await;
     assert!(!alice
         .dev
@@ -257,7 +304,11 @@ async fn full_flow() {
     // Non-admins can't ban.
     let r = bob2
         .http
-        .request("POST", &format!("/api/admin/users/{}/ban", alice.dev.user_id), None)
+        .request(
+            "POST",
+            &format!("/api/admin/users/{}/ban", alice.dev.user_id),
+            None,
+        )
         .await
         .unwrap();
     assert_eq!(r.0, 403);
@@ -271,7 +322,9 @@ async fn full_flow() {
     // Last member leaves -> next device re-founds the channel.
     session::logout(&bob2.http).await.unwrap();
     session::logout(&alice.http).await.unwrap();
-    let mut alice2 = Client::login(&url, "alice", "Alice-pass-1234").await.unwrap();
+    let mut alice2 = Client::login(&url, "alice", "Alice-pass-1234")
+        .await
+        .unwrap();
     alice2.tick().await.unwrap();
     assert!(alice2.dev.is_joined(general));
     alice2.send("general", "back").await;
@@ -289,7 +342,10 @@ async fn refound_when_members_offline() {
     let mut bob = Client::register(&url, "bob", "Bob-pass-12345", None).await;
     tokio::time::sleep(Duration::from_millis(1600)).await;
     bob.tick().await.unwrap();
-    assert!(bob.dev.is_joined(general), "bob re-founds since nobody is online");
+    assert!(
+        bob.dev.is_joined(general),
+        "bob re-founds since nobody is online"
+    );
     bob.send("general", "anyone?").await;
     assert!(!bob.texts("general").iter().any(|t| t.1 == "old secret"));
     // Alice returns: she drops the stale group and bob lets her back in.
@@ -300,5 +356,8 @@ async fn refound_when_members_offline() {
     bob.send("general", "welcome back").await;
     alice.tick().await.unwrap();
     assert!(alice.texts("general").iter().any(|t| t.1 == "welcome back"));
-    assert!(alice.texts("general").iter().any(|t| t.1 == "old secret"), "local history kept");
+    assert!(
+        alice.texts("general").iter().any(|t| t.1 == "old secret"),
+        "local history kept"
+    );
 }

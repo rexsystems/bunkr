@@ -246,12 +246,10 @@ impl Engine {
                         reply,
                     } => {
                         // Re-check the current password locally first.
-                        let ok = bunkr_core::crypto::derive_password_keys(
-                            &current,
-                            &self.vault.salt.0,
-                        )
-                        .map(|k| k.auth_key == self.keys.auth_key)
-                        .unwrap_or(false);
+                        let ok =
+                            bunkr_core::crypto::derive_password_keys(&current, &self.vault.salt.0)
+                                .map(|k| k.auth_key == self.keys.auth_key)
+                                .unwrap_or(false);
                         if !ok {
                             let _ = reply.send(Err("Current password is wrong".into()));
                             continue;
@@ -373,7 +371,11 @@ fn http_set_token(http: &WebHttp, dev: &Device) {
 }
 
 /// Keep a WebSocket open with reconnect + backoff.
-fn spawn_ws(http: WebHttp, tx: mpsc::UnboundedSender<Cmd>, alive: std::rc::Rc<std::cell::Cell<bool>>) {
+fn spawn_ws(
+    http: WebHttp,
+    tx: mpsc::UnboundedSender<Cmd>,
+    alive: std::rc::Rc<std::cell::Cell<bool>>,
+) {
     spawn_local(async move {
         let mut backoff = 500;
         while alive.get() {
