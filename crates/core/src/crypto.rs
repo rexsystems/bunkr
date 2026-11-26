@@ -88,6 +88,25 @@ pub fn open(key: &[u8; 32], aad: &[u8], sealed: &[u8]) -> Result<Vec<u8>, Error>
         .map_err(|_| Error::Decrypt)
 }
 
+/// Encrypt an attachment with a fresh random key. Returns (key, ciphertext).
+pub fn encrypt_blob(plain: &[u8]) -> ([u8; 32], Vec<u8>) {
+    let mut key = [0u8; 32];
+    OsRng.fill_bytes(&mut key);
+    let ct = seal(&key, b"bunkr/blob/v1", plain);
+    (key, ct)
+}
+
+pub fn decrypt_blob(key: &[u8], ct: &[u8]) -> Result<Vec<u8>, Error> {
+    let key: [u8; 32] = key.try_into().map_err(|_| Error::Decrypt)?;
+    open(&key, b"bunkr/blob/v1", ct)
+}
+
+pub fn random_id() -> String {
+    let mut b = [0u8; 12];
+    OsRng.fill_bytes(&mut b);
+    b.iter().map(|x| format!("{x:02x}")).collect()
+}
+
 /// Long-term account identity. Signs every device the user logs in from.
 #[derive(Clone)]
 pub struct Account {

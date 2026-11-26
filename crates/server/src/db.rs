@@ -92,6 +92,29 @@ CREATE TABLE IF NOT EXISTS removals(
   PRIMARY KEY(channel_id, device_id)
 );
 
+-- DM participants (public channels have no rows here).
+CREATE TABLE IF NOT EXISTS channel_users(
+  channel_id INTEGER NOT NULL REFERENCES channels(id) ON DELETE CASCADE,
+  user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  PRIMARY KEY(channel_id, user_id)
+);
+
+-- Encrypted attachments; the bytes live in <data>/blobs/<id>.
+CREATE TABLE IF NOT EXISTS blobs(
+  id TEXT PRIMARY KEY,
+  channel_id INTEGER NOT NULL REFERENCES channels(id) ON DELETE CASCADE,
+  size INTEGER NOT NULL,
+  hour INTEGER NOT NULL,
+  delete_hash BLOB NOT NULL
+);
+
+-- Web push endpoints (contentless wake-ups only).
+CREATE TABLE IF NOT EXISTS push_subs(
+  device_id INTEGER PRIMARY KEY REFERENCES devices(id) ON DELETE CASCADE,
+  endpoint TEXT NOT NULL,
+  scope TEXT NOT NULL DEFAULT 'all'
+);
+
 CREATE TABLE IF NOT EXISTS welcomes(
   device_id INTEGER NOT NULL REFERENCES devices(id) ON DELETE CASCADE,
   channel_id INTEGER NOT NULL REFERENCES channels(id) ON DELETE CASCADE,
@@ -106,6 +129,7 @@ impl Db {
     pub fn open(path: &std::path::Path) -> DbResult<Self> {
         let conn = Connection::open(path)?;
         conn.execute_batch(SCHEMA)?;
+        migrate(&conn)?;
         conn.busy_timeout(std::time::Duration::from_secs(5))?;
         Ok(Db(Arc::new(Mutex::new(conn))))
     }
@@ -123,6 +147,38 @@ impl Db {
         .await
         .expect("db task panicked")
     }
+}
+
+fn has_column(c: &Connection, table: &str, col: &str) -> DbResult<bool> {
+    let mut st = c.prepare(&format!("PRAGMA table_info({table})"))?;
+    let names = st.query_map([], |r| r.get::<_, String>(1))?;
+    for n in names {
+        if n? == col {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
+fn migrate(c: &Connection) -> DbResult<()> {
+    if !has_column(c, "channels", "kind")? {
+        c.execute(
+            "ALTER TABLE channels ADD COLUMN kind TEXT NOT NULL DEFAULT 'public'",
+            [],
+        )?;
+    }
+    Ok(())
+}
+
+/// SQL predicate: may the device `?dev` take part in channel `ch` (alias)?
+pub const ALLOWED: &str = "(ch.kind = 'public' OR EXISTS(SELECT 1 FROM channel_users cu JOIN devices dv ON dv.user_id = cu.user_id WHERE cu.channel_id = ch.id AND dv.id = {dev}))";
+
+pub fn allowed(c: &Connection, channel: i64, device: i64) -> DbResult<bool> {
+    let sql = format!(
+        "SELECT EXISTS(SELECT 1 FROM channels ch WHERE ch.id = ?1 AND {})",
+        ALLOWED.replace("{dev}", "?2")
+    );
+    c.query_row(&sql, params![channel, device], |r| r.get(0))
 }
 
 pub fn meta_get(c: &Connection, k: &str) -> DbResult<Option<Vec<u8>>> {
@@ -211,7 +267,12 @@ pub fn ensure_default_channel(c: &Connection) -> DbResult<()> {
 }
 
 /// Delete expired log entries. Returns how many rows were removed.
-pub fn purge(c: &mut Connection, now_hour: i64, retention_days: i64) -> DbResult<usize> {
+/// Returns (deleted log rows, expired blob ids whose files must be removed).
+pub fn purge(
+    c: &mut Connection,
+    now_hour: i64,
+    retention_days: i64,
+) -> DbResult<(usize, Vec<String>)> {
     let tx = c.transaction()?;
     let chans: Vec<(i64, i64)> = {
         let mut st = tx.prepare("SELECT id, ttl_hours FROM channels")?;
@@ -238,11 +299,30 @@ pub fn purge(c: &mut Connection, now_hour: i64, retention_days: i64) -> DbResult
             )?;
         }
     }
+    // Expired attachments.
+    let expired: Vec<String> = {
+        let mut st = tx.prepare(
+            "SELECT b.id FROM blobs b JOIN channels ch ON ch.id = b.channel_id
+             WHERE b.hour < ?1 - (CASE WHEN ch.ttl_hours > 0 THEN ch.ttl_hours ELSE ?2 * 24 END)",
+        )?;
+        let rows = st.query_map(params![now_hour, retention_days], |r| r.get(0))?;
+        rows.collect::<DbResult<_>>()?
+    };
+    for id in &expired {
+        tx.execute("DELETE FROM blobs WHERE id = ?", [id])?;
+    }
     // Sessions that never registered a device are abandoned logins.
     tx.execute(
         "DELETE FROM sessions WHERE device_id IS NULL AND created_day < ?",
         [now_hour / 24 - 1],
     )?;
     tx.commit()?;
-    Ok(total)
+    Ok((total, expired))
+}
+
+/// Every blob id that still has a row (used to sweep orphan files).
+pub fn blob_ids(c: &Connection) -> DbResult<std::collections::HashSet<String>> {
+    let mut st = c.prepare("SELECT id FROM blobs")?;
+    let rows = st.query_map([], |r| r.get(0))?;
+    rows.collect()
 }

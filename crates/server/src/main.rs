@@ -2,7 +2,9 @@
 
 mod api;
 mod db;
+mod extra;
 mod hub;
+mod push;
 
 use std::{
     net::SocketAddr,
@@ -25,7 +27,7 @@ fn env(k: &str, d: &str) -> String {
 }
 
 const CSP: &str = "default-src 'none'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; \
-img-src 'self' data:; font-src 'self'; connect-src 'self' ws: wss:; manifest-src 'self'; worker-src 'self'; \
+img-src 'self' data: blob:; media-src 'self' blob:; font-src 'self'; connect-src 'self' ws: wss:; manifest-src 'self'; worker-src 'self'; \
 frame-ancestors 'none'; base-uri 'none'; form-action 'none'";
 
 #[tokio::main]
@@ -53,29 +55,55 @@ async fn main() {
         .parse()
         .expect("BUNKR_BIND");
 
-    let (secret, setup_code) = db
-        .run(|c| -> rusqlite::Result<([u8; 32], Option<String>)> {
-            db::ensure_default_channel(c)?;
-            let secret = match db::meta_get(c, "secret")? {
-                Some(s) if s.len() == 32 => s.try_into().unwrap(),
-                _ => {
-                    let mut s = [0u8; 32];
-                    rand::rngs::OsRng.fill_bytes(&mut s);
-                    db::meta_set(c, "secret", &s)?;
-                    s
-                }
-            };
-            let code = if db::user_count(c)? == 0 {
-                Some(std::env::var("BUNKR_SETUP_CODE").unwrap_or_else(|_| {
-                    let mut b = [0u8; 6];
-                    rand::rngs::OsRng.fill_bytes(&mut b);
-                    hex::encode(b).to_uppercase()
-                }))
-            } else {
-                None
-            };
-            Ok((secret, code))
-        })
+    let max_upload: u64 = env("BUNKR_MAX_UPLOAD_MB", "25")
+        .parse()
+        .unwrap_or(25)
+        .clamp(1, 2048)
+        * 1024
+        * 1024;
+    let list = |k: &str| -> Vec<String> {
+        env(k, "")
+            .split(',')
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+            .collect()
+    };
+    let (secret, setup_code, vapid) = db
+        .run(
+            |c| -> rusqlite::Result<([u8; 32], Option<String>, [u8; 32])> {
+                db::ensure_default_channel(c)?;
+                let secret = match db::meta_get(c, "secret")? {
+                    Some(s) if s.len() == 32 => s.try_into().unwrap(),
+                    _ => {
+                        let mut s = [0u8; 32];
+                        rand::rngs::OsRng.fill_bytes(&mut s);
+                        db::meta_set(c, "secret", &s)?;
+                        s
+                    }
+                };
+                let code = if db::user_count(c)? == 0 {
+                    Some(std::env::var("BUNKR_SETUP_CODE").unwrap_or_else(|_| {
+                        let mut b = [0u8; 6];
+                        rand::rngs::OsRng.fill_bytes(&mut b);
+                        hex::encode(b).to_uppercase()
+                    }))
+                } else {
+                    None
+                };
+                let vapid = match db::meta_get(c, "vapid")? {
+                    Some(s) if s.len() == 32 => s.try_into().unwrap(),
+                    _ => loop {
+                        let mut s = [0u8; 32];
+                        rand::rngs::OsRng.fill_bytes(&mut s);
+                        if p256::ecdsa::SigningKey::from_slice(&s).is_ok() {
+                            db::meta_set(c, "vapid", &s)?;
+                            break s;
+                        }
+                    },
+                };
+                Ok((secret, code, vapid))
+            },
+        )
         .await
         .expect("init database");
 
@@ -93,16 +121,36 @@ async fn main() {
         cfg: api::Config {
             name,
             retention_days,
+            data_dir: data.clone(),
+            max_upload,
+            turn_urls: list("BUNKR_TURN_URLS"),
+            stun_urls: list("BUNKR_STUN_URLS"),
+            turn_secret: std::env::var("BUNKR_TURN_SECRET")
+                .ok()
+                .filter(|s| !s.is_empty()),
             refound_after_secs: env("BUNKR_REFOUND_SECS", "8").parse().unwrap_or(8),
         },
         secret: Arc::new(secret),
         setup_code: Arc::new(Mutex::new(setup_code)),
         limiter: Default::default(),
+        push: if env("BUNKR_PUSH", "on") == "off" {
+            None
+        } else {
+            push::Push::new(
+                vapid,
+                env(
+                    "BUNKR_PUSH_CONTACT",
+                    &format!("mailto:admin@{}", env("BUNKR_DOMAIN", "localhost")),
+                ),
+            )
+            .map(Arc::new)
+        },
     };
 
     // Retention: delete expired ciphertext every 10 minutes.
     {
         let db = db.clone();
+        let blobs_dir = data.join("blobs");
         tokio::spawn(async move {
             let mut iv = tokio::time::interval(Duration::from_secs(600));
             loop {
@@ -113,10 +161,32 @@ async fn main() {
                     .as_secs()
                     / 3600) as i64;
                 let r = db
-                    .run(move |c| db::purge(c, now_h, retention_days as i64))
+                    .run(move |c| {
+                        let out = db::purge(c, now_h, retention_days as i64)?;
+                        Ok::<_, rusqlite::Error>((out, db::blob_ids(c)?))
+                    })
                     .await;
-                if let Err(e) = r {
-                    tracing::warn!("purge failed: {e}");
+                match r {
+                    Err(e) => tracing::warn!("purge failed: {e}"),
+                    Ok((_, live)) => {
+                        // Remove expired and orphaned attachment files.
+                        for dir in std::fs::read_dir(&blobs_dir)
+                            .into_iter()
+                            .flatten()
+                            .flatten()
+                        {
+                            for f in std::fs::read_dir(dir.path())
+                                .into_iter()
+                                .flatten()
+                                .flatten()
+                            {
+                                let name = f.file_name().to_string_lossy().to_string();
+                                if !live.contains(&name) {
+                                    let _ = std::fs::remove_file(f.path());
+                                }
+                            }
+                        }
+                    }
                 }
             }
         });
@@ -138,7 +208,9 @@ async fn main() {
     let app = api::router()
         .with_state(state)
         .fallback_service(static_files)
-        .layer(RequestBodyLimitLayer::new(8 * 1024 * 1024))
+        .layer(RequestBodyLimitLayer::new(
+            max_upload as usize + 1024 * 1024,
+        ))
         .layer(cors)
         .layer(SetResponseHeaderLayer::overriding(
             header::CONTENT_SECURITY_POLICY,

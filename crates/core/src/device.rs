@@ -55,6 +55,22 @@ pub enum MsgBody {
     Text(String),
     System(String),
     Undecryptable,
+    Deleted,
+}
+
+/// An end-to-end encrypted attachment: the key travels inside the MLS
+/// message, the server only stores the ciphertext under `blob`.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+pub struct FileRef {
+    pub blob: String,
+    pub key: B64,
+    pub name: String,
+    pub mime: String,
+    pub size: u64,
+    #[serde(default)]
+    pub w: Option<u32>,
+    #[serde(default)]
+    pub h: Option<u32>,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
@@ -66,6 +82,101 @@ pub struct Msg {
     pub body: MsgBody,
     /// Sender device was not vouched for by a valid account signature.
     pub unverified: bool,
+    /// Stable message id (random, chosen by the sender).
+    #[serde(default)]
+    pub id: String,
+    #[serde(default)]
+    pub reply_to: Option<String>,
+    #[serde(default)]
+    pub edited: Option<i64>,
+    #[serde(default)]
+    pub reactions: BTreeMap<String, BTreeSet<UserId>>,
+    #[serde(default)]
+    pub files: Vec<FileRef>,
+    /// Only on the sender's own device: proves it may delete the blobs.
+    #[serde(default)]
+    pub delete_tokens: Vec<String>,
+}
+
+impl Msg {
+    fn new(seq: Seq, user_id: UserId, device_id: DeviceId, ts: i64, body: MsgBody) -> Msg {
+        Msg {
+            seq,
+            user_id,
+            device_id,
+            ts,
+            body,
+            unverified: false,
+            id: format!("s{seq}"),
+            reply_to: None,
+            edited: None,
+            reactions: BTreeMap::new(),
+            files: vec![],
+            delete_tokens: vec![],
+        }
+    }
+}
+
+pub const MAX_FILES: usize = 10;
+pub const MAX_EMOJI: usize = 16;
+
+/// Everything that can travel inside a stored MLS application message.
+#[derive(Serialize, Deserialize, Clone, Debug)]
+#[serde(tag = "k", rename_all = "snake_case")]
+pub enum Wire {
+    Msg {
+        id: String,
+        ts: i64,
+        text: String,
+        #[serde(default)]
+        reply_to: Option<String>,
+        #[serde(default)]
+        files: Vec<FileRef>,
+    },
+    Edit {
+        id: String,
+        ts: i64,
+        text: String,
+    },
+    Delete {
+        id: String,
+    },
+    React {
+        id: String,
+        emoji: String,
+        on: bool,
+    },
+}
+
+#[derive(Serialize, Deserialize)]
+struct Envelope {
+    v: u8,
+    #[serde(flatten)]
+    w: Wire,
+}
+
+/// Never-stored, encrypted realtime signals.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+#[serde(tag = "k", rename_all = "snake_case")]
+pub enum Eph {
+    Typing,
+    /// WebRTC call signalling. `to` = target device (None = everyone).
+    Call {
+        op: String,
+        #[serde(default)]
+        to: Option<DeviceId>,
+        #[serde(default)]
+        data: String,
+        #[serde(default)]
+        video: bool,
+    },
+}
+
+#[derive(Serialize, Deserialize)]
+struct EphEnvelope {
+    v: u8,
+    #[serde(flatten)]
+    e: Eph,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, Default)]
@@ -77,6 +188,10 @@ pub struct ChanState {
     /// their sender in MLS, and own commits get merged instead).
     pub own: BTreeSet<Seq>,
     pub messages: Vec<Msg>,
+    /// For DMs: the other participant, pinned the first time we saw it so the
+    /// server can't quietly add a third person later.
+    #[serde(default)]
+    pub dm_peer: Option<UserId>,
 }
 
 /// Payload inside an MLS application message.
@@ -404,8 +519,65 @@ impl Device {
             self.drop_group(cid);
             self.chans.remove(&cid);
         }
-        self.channels = st.channels.clone();
+        let mut channels = vec![];
+        for c in &st.channels {
+            if c.kind == proto::ChannelKind::Dm {
+                let peer = match c.dm_users.as_slice() {
+                    [a, b] if *a == self.user_id => *b,
+                    [a, b] if *b == self.user_id => *a,
+                    _ => continue,
+                };
+                let ch = self.chans.entry(c.id).or_default();
+                match ch.dm_peer {
+                    None => ch.dm_peer = Some(peer),
+                    Some(p) if p != peer => continue,
+                    _ => {}
+                }
+            }
+            channels.push(c.clone());
+        }
+        self.channels = channels;
         self.channels.sort_by_key(|c| (c.position, c.id));
+    }
+
+    /// Is `user` allowed to be in channel `cid`? Public: anyone. DM: only
+    /// us and the pinned peer.
+    fn member_allowed(&self, cid: ChannelId, user: UserId) -> bool {
+        match self.channels.iter().find(|c| c.id == cid) {
+            Some(c) if c.kind == proto::ChannelKind::Dm => {
+                user == self.user_id || self.chans.get(&cid).and_then(|c| c.dm_peer) == Some(user)
+            }
+            Some(_) => true,
+            None => false,
+        }
+    }
+
+    pub fn is_dm(&self, cid: ChannelId) -> bool {
+        self.channels
+            .iter()
+            .any(|c| c.id == cid && c.kind == proto::ChannelKind::Dm)
+    }
+
+    pub fn dm_peer(&self, cid: ChannelId) -> Option<UserId> {
+        self.chans.get(&cid).and_then(|c| c.dm_peer)
+    }
+
+    /// Open (or create) the DM with `user`.
+    pub async fn open_dm(
+        &mut self,
+        http: &impl Http,
+        user: UserId,
+        now_ms: i64,
+    ) -> Result<ChannelId> {
+        let r: proto::DmResp = call_ok(
+            http,
+            "POST",
+            "/api/dms",
+            Some(&proto::DmReq { user_id: user }),
+        )
+        .await?;
+        self.tick(http, now_ms).await?;
+        Ok(r.channel_id)
     }
 
     fn drop_group(&mut self, cid: ChannelId) {
@@ -420,14 +592,8 @@ impl Device {
 
     fn system(&mut self, cid: ChannelId, seq: Seq, now_ms: i64, text: impl Into<String>) {
         let ch = self.chans.entry(cid).or_default();
-        ch.messages.push(Msg {
-            seq,
-            user_id: 0,
-            device_id: 0,
-            ts: now_ms,
-            body: MsgBody::System(text.into()),
-            unverified: false,
-        });
+        ch.messages
+            .push(Msg::new(seq, 0, 0, now_ms, MsgBody::System(text.into())));
     }
 
     pub fn purge(&mut self, now_ms: i64, retention_days: u32) {
@@ -679,14 +845,9 @@ impl Device {
                         let _ = g.merge_pending_commit(&self.provider);
                     }
                 } else {
-                    self.chans.entry(cid).or_default().messages.push(Msg {
-                        seq: e.seq,
-                        user_id: 0,
-                        device_id: 0,
-                        ts: now_ms,
-                        body: MsgBody::Undecryptable,
-                        unverified: true,
-                    });
+                    let mut m = Msg::new(e.seq, 0, 0, now_ms, MsgBody::Undecryptable);
+                    m.unverified = true;
+                    self.chans.entry(cid).or_default().messages.push(m);
                 }
                 return;
             }
@@ -696,27 +857,27 @@ impl Device {
             ProcessedMessageContent::ApplicationMessage(app) => {
                 let (u, d) = sender.map(|s| (s.u, s.d)).unwrap_or((0, 0));
                 let unverified = !self.is_trusted(u, d);
-                let body = serde_json::from_slice::<Payload>(&app.into_bytes())
-                    .ok()
-                    .filter(|p| p.v == 1);
-                let ch = self.chans.entry(cid).or_default();
-                match body {
-                    Some(p) => ch.messages.push(Msg {
-                        seq: e.seq,
-                        user_id: u,
-                        device_id: d,
-                        ts: p.ts,
-                        body: MsgBody::Text(p.text.chars().take(MAX_TEXT).collect()),
-                        unverified,
-                    }),
-                    None => ch.messages.push(Msg {
-                        seq: e.seq,
-                        user_id: u,
-                        device_id: d,
-                        ts: now_ms,
-                        body: MsgBody::Undecryptable,
-                        unverified,
-                    }),
+                let bytes = app.into_bytes();
+                let wire = match serde_json::from_slice::<Envelope>(&bytes) {
+                    Ok(env) if env.v == 2 => Some(env.w),
+                    _ => serde_json::from_slice::<Payload>(&bytes)
+                        .ok()
+                        .filter(|p| p.v == 1)
+                        .map(|p| Wire::Msg {
+                            id: format!("s{}", e.seq),
+                            ts: p.ts,
+                            text: p.text,
+                            reply_to: None,
+                            files: vec![],
+                        }),
+                };
+                match wire {
+                    Some(w) => self.apply_wire(cid, e.seq, u, d, unverified, w),
+                    None => {
+                        let mut m = Msg::new(e.seq, u, d, now_ms, MsgBody::Undecryptable);
+                        m.unverified = unverified;
+                        self.chans.entry(cid).or_default().messages.push(m);
+                    }
                 }
             }
             ProcessedMessageContent::StagedCommitMessage(staged) => {
@@ -734,7 +895,11 @@ impl Device {
                 let g = self.groups.get_mut(&cid).expect("group");
                 let merged = g.merge_staged_commit(&self.provider, *staged);
                 for (c, k) in adds {
-                    self.verify_member(&c, &k);
+                    if let Some(b) = self.verify_member(&c, &k) {
+                        if !self.member_allowed(cid, b.u) {
+                            self.trust.insert(tkey(b.u, b.d), false);
+                        }
+                    }
                 }
                 if self_removed || merged.is_err() {
                     self.drop_group(cid);
@@ -800,7 +965,11 @@ impl Device {
                 // Refuse anything the claimed account key did not sign: a
                 // malicious server cannot slip its own device into a channel.
                 match self.verify_member(&ln.credential().clone(), &sig_key) {
-                    Some(b) if b.u == j.user_id && b.d == j.device_id => {
+                    Some(b)
+                        if b.u == j.user_id
+                            && b.d == j.device_id
+                            && self.member_allowed(cid, b.u) =>
+                    {
                         kps.push(kp);
                         added.push(proto::AddedDevice {
                             device_id: j.device_id,
@@ -887,26 +1056,92 @@ impl Device {
         Ok(())
     }
 
-    pub async fn send_text(
+    /// Apply a decrypted (or own) wire message to the local cache.
+    fn apply_wire(
+        &mut self,
+        cid: ChannelId,
+        seq: Seq,
+        u: UserId,
+        d: DeviceId,
+        unverified: bool,
+        w: Wire,
+    ) {
+        let ch = self.chans.entry(cid).or_default();
+        let pos = |ch: &ChanState, id: &str| ch.messages.iter().rposition(|m| m.id == id);
+        match w {
+            Wire::Msg {
+                id,
+                ts,
+                text,
+                reply_to,
+                files,
+            } => {
+                if ch.messages.iter().any(|m| m.id == id) {
+                    return;
+                }
+                let mut m = Msg::new(
+                    seq,
+                    u,
+                    d,
+                    ts,
+                    MsgBody::Text(text.chars().take(MAX_TEXT).collect()),
+                );
+                m.id = id.chars().take(40).collect();
+                m.reply_to = reply_to;
+                m.files = files.into_iter().take(MAX_FILES).collect();
+                m.unverified = unverified;
+                ch.messages.push(m);
+            }
+            Wire::Edit { id, ts, text } => {
+                if let Some(i) = pos(ch, &id) {
+                    let m = &mut ch.messages[i];
+                    if m.user_id == u && matches!(m.body, MsgBody::Text(_)) {
+                        m.body = MsgBody::Text(text.chars().take(MAX_TEXT).collect());
+                        m.edited = Some(ts);
+                    }
+                }
+            }
+            Wire::Delete { id } => {
+                if let Some(i) = pos(ch, &id) {
+                    let m = &mut ch.messages[i];
+                    if m.user_id == u {
+                        m.body = MsgBody::Deleted;
+                        m.files.clear();
+                        m.reactions.clear();
+                    }
+                }
+            }
+            Wire::React { id, emoji, on } => {
+                if emoji.is_empty() || emoji.chars().count() > MAX_EMOJI {
+                    return;
+                }
+                if let Some(i) = pos(ch, &id) {
+                    let m = &mut ch.messages[i];
+                    if matches!(m.body, MsgBody::Text(_)) {
+                        let set = m.reactions.entry(emoji.clone()).or_default();
+                        if on {
+                            set.insert(u);
+                        } else {
+                            set.remove(&u);
+                        }
+                        if set.is_empty() {
+                            m.reactions.remove(&emoji);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /// Encrypt and store one wire message in the channel log.
+    async fn send_wire(
         &mut self,
         http: &impl Http,
         cid: ChannelId,
-        text: &str,
+        w: &Wire,
         now_ms: i64,
-    ) -> Result<()> {
-        let text = text.trim();
-        if text.is_empty() {
-            return Ok(());
-        }
-        if text.chars().count() > MAX_TEXT {
-            return Err(Error::Other(format!("Message too long (max {MAX_TEXT})")));
-        }
-        let payload = serde_json::to_vec(&Payload {
-            v: 1,
-            ts: now_ms,
-            text: text.to_string(),
-        })
-        .expect("json");
+    ) -> Result<Seq> {
+        let payload = serde_json::to_vec(&Envelope { v: 2, w: w.clone() }).expect("json");
         for _ in 0..4 {
             self.sync_channel(http, cid, now_ms).await?;
             let generation = self.chans.entry(cid).or_default().generation;
@@ -934,18 +1169,263 @@ impl Device {
             if let Reply::Ok(s) = r {
                 let ch = self.chans.entry(cid).or_default();
                 ch.own.insert(s.seq);
-                ch.messages.push(Msg {
-                    seq: s.seq,
-                    user_id: self.user_id,
-                    device_id: self.device_id,
-                    ts: now_ms,
-                    body: MsgBody::Text(text.to_string()),
-                    unverified: false,
-                });
-                return Ok(());
+                let (u, d) = (self.user_id, self.device_id);
+                self.apply_wire(cid, s.seq, u, d, false, w.clone());
+                return Ok(s.seq);
             }
         }
         Err(Error::Other("Channel is busy, try again".into()))
+    }
+
+    pub async fn send_text(
+        &mut self,
+        http: &impl Http,
+        cid: ChannelId,
+        text: &str,
+        now_ms: i64,
+    ) -> Result<()> {
+        self.send_message(http, cid, text, None, vec![], vec![], now_ms)
+            .await
+            .map(|_| ())
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub async fn send_message(
+        &mut self,
+        http: &impl Http,
+        cid: ChannelId,
+        text: &str,
+        reply_to: Option<String>,
+        files: Vec<FileRef>,
+        delete_tokens: Vec<String>,
+        now_ms: i64,
+    ) -> Result<String> {
+        let text = text.trim();
+        if text.is_empty() && files.is_empty() {
+            return Err(Error::Other("Nothing to send".into()));
+        }
+        if text.chars().count() > MAX_TEXT {
+            return Err(Error::Other(format!("Message too long (max {MAX_TEXT})")));
+        }
+        if files.len() > MAX_FILES {
+            return Err(Error::Other(format!("Max {MAX_FILES} files per message")));
+        }
+        let id = crypto::random_id();
+        let w = Wire::Msg {
+            id: id.clone(),
+            ts: now_ms,
+            text: text.to_string(),
+            reply_to,
+            files,
+        };
+        self.send_wire(http, cid, &w, now_ms).await?;
+        if let Some(m) = self
+            .chans
+            .get_mut(&cid)
+            .and_then(|c| c.messages.iter_mut().rev().find(|m| m.id == id))
+        {
+            m.delete_tokens = delete_tokens;
+        }
+        Ok(id)
+    }
+
+    fn own_msg(&self, cid: ChannelId, id: &str) -> Option<&Msg> {
+        self.chans
+            .get(&cid)?
+            .messages
+            .iter()
+            .rev()
+            .find(|m| m.id == id && m.user_id == self.user_id)
+    }
+
+    pub async fn edit_message(
+        &mut self,
+        http: &impl Http,
+        cid: ChannelId,
+        id: &str,
+        text: &str,
+        now_ms: i64,
+    ) -> Result<()> {
+        let text = text.trim();
+        if text.is_empty() || text.chars().count() > MAX_TEXT {
+            return Err(Error::Other("Invalid message".into()));
+        }
+        if self.own_msg(cid, id).is_none() {
+            return Err(Error::Other("You can only edit your own messages".into()));
+        }
+        let w = Wire::Edit {
+            id: id.to_string(),
+            ts: now_ms,
+            text: text.to_string(),
+        };
+        self.send_wire(http, cid, &w, now_ms).await.map(|_| ())
+    }
+
+    /// Delete one of your messages for everyone (and its attachments).
+    pub async fn delete_message(
+        &mut self,
+        http: &impl Http,
+        cid: ChannelId,
+        id: &str,
+        now_ms: i64,
+    ) -> Result<()> {
+        let Some(m) = self.own_msg(cid, id) else {
+            return Err(Error::Other("You can only delete your own messages".into()));
+        };
+        let blobs: Vec<(String, String)> = m
+            .files
+            .iter()
+            .zip(m.delete_tokens.iter())
+            .map(|(f, t)| (f.blob.clone(), t.clone()))
+            .collect();
+        let w = Wire::Delete { id: id.to_string() };
+        self.send_wire(http, cid, &w, now_ms).await?;
+        for (blob, token) in blobs {
+            let _ = http
+                .request("DELETE", &format!("/api/blobs/{blob}?token={token}"), None)
+                .await;
+        }
+        Ok(())
+    }
+
+    pub async fn react(
+        &mut self,
+        http: &impl Http,
+        cid: ChannelId,
+        id: &str,
+        emoji: &str,
+        now_ms: i64,
+    ) -> Result<()> {
+        let on = !self
+            .chans
+            .get(&cid)
+            .and_then(|c| c.messages.iter().rev().find(|m| m.id == id))
+            .and_then(|m| m.reactions.get(emoji))
+            .map(|s| s.contains(&self.user_id))
+            .unwrap_or(false);
+        let w = Wire::React {
+            id: id.to_string(),
+            emoji: emoji.to_string(),
+            on,
+        };
+        self.send_wire(http, cid, &w, now_ms).await.map(|_| ())
+    }
+
+    /// Encrypt + upload an attachment; returns the reference to embed and the
+    /// delete token to keep locally.
+    pub async fn upload_file(
+        &mut self,
+        http: &impl Http,
+        cid: ChannelId,
+        bytes: &[u8],
+        name: &str,
+        mime: &str,
+        dims: Option<(u32, u32)>,
+    ) -> Result<(FileRef, String)> {
+        if !self.groups.contains_key(&cid) {
+            return Err(Error::Other("Not in this channel yet".into()));
+        }
+        let (key, ct) = crypto::encrypt_blob(bytes);
+        let (status, body) = http
+            .request("POST", &format!("/api/channels/{cid}/blobs"), Some(ct))
+            .await
+            .map_err(Error::Network)?;
+        if status == 401 {
+            return Err(Error::Revoked);
+        }
+        if !(200..300).contains(&status) {
+            let msg = serde_json::from_slice::<proto::ApiError>(&body)
+                .map(|e| e.error)
+                .unwrap_or_else(|_| format!("Upload failed (HTTP {status})"));
+            return Err(Error::Server(msg));
+        }
+        let r: proto::BlobResp =
+            serde_json::from_slice(&body).map_err(|e| Error::Other(e.to_string()))?;
+        Ok((
+            FileRef {
+                blob: r.id,
+                key: B64(key.to_vec()),
+                name: name.chars().take(200).collect(),
+                mime: mime.chars().take(100).collect(),
+                size: bytes.len() as u64,
+                w: dims.map(|d| d.0),
+                h: dims.map(|d| d.1),
+            },
+            r.delete_token,
+        ))
+    }
+
+    /// Download and decrypt an attachment.
+    pub async fn download_file(http: &impl Http, f: &FileRef) -> Result<Vec<u8>> {
+        let (status, body) = http
+            .request("GET", &format!("/api/blobs/{}", f.blob), None)
+            .await
+            .map_err(Error::Network)?;
+        if status == 401 {
+            return Err(Error::Revoked);
+        }
+        if status != 200 {
+            return Err(Error::Server("File is gone (expired or deleted)".into()));
+        }
+        crypto::decrypt_blob(&f.key.0, &body)
+    }
+
+    /// Send a never-stored encrypted signal to the other online members.
+    pub async fn send_ephemeral(
+        &mut self,
+        http: &impl Http,
+        cid: ChannelId,
+        e: &Eph,
+        now_ms: i64,
+    ) -> Result<()> {
+        let payload = serde_json::to_vec(&EphEnvelope { v: 1, e: e.clone() }).expect("json");
+        for attempt in 0..2 {
+            if attempt > 0 {
+                self.sync_channel(http, cid, now_ms).await?;
+            }
+            let generation = self.chans.entry(cid).or_default().generation;
+            let Some(g) = self.groups.get_mut(&cid) else {
+                return Ok(());
+            };
+            let out = g
+                .create_message(&self.provider, &self.signer, &payload)
+                .map_err(Error::mls)?;
+            let req = proto::SendReq {
+                epoch: g.epoch().as_u64() as i64,
+                generation,
+                data: B64(out.tls_serialize_detached().map_err(Error::mls)?),
+            };
+            let r: Reply<()> = call(
+                http,
+                "POST",
+                &format!("/api/channels/{cid}/ephemeral"),
+                Some(&req),
+            )
+            .await?;
+            if let Reply::Ok(()) = r {
+                return Ok(());
+            }
+        }
+        Ok(())
+    }
+
+    /// Decrypt an ephemeral signal. Returns the authenticated sender.
+    pub fn open_ephemeral(
+        &mut self,
+        cid: ChannelId,
+        data: &[u8],
+    ) -> Option<(UserId, DeviceId, bool, Eph)> {
+        let msg = MlsMessageIn::tls_deserialize_exact(data).ok()?;
+        let pm = msg.try_into_protocol_message().ok()?;
+        let g = self.groups.get_mut(&cid)?;
+        let processed = g.process_message(&self.provider, pm).ok()?;
+        let sender = parse_credential(processed.credential())?;
+        let ProcessedMessageContent::ApplicationMessage(app) = processed.into_content() else {
+            return None;
+        };
+        let env: EphEnvelope = serde_json::from_slice(&app.into_bytes()).ok()?;
+        let trusted = self.is_trusted(sender.u, sender.d);
+        Some((sender.u, sender.d, trusted, env.e))
     }
 
     /// A moderator deleted a log entry.

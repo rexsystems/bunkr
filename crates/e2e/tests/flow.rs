@@ -153,6 +153,21 @@ impl Client {
             })
             .unwrap_or_default()
     }
+    fn texts_in(&self, cid: i64) -> Vec<String> {
+        self.dev
+            .chans
+            .get(&cid)
+            .map(|c| {
+                c.messages
+                    .iter()
+                    .filter_map(|m| match &m.body {
+                        MsgBody::Text(t) => Some(t.clone()),
+                        _ => None,
+                    })
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
     async fn send(&mut self, name: &str, text: &str) {
         let cid = self.chan(name);
         self.dev
@@ -360,4 +375,259 @@ async fn refound_when_members_offline() {
         alice.texts("general").iter().any(|t| t.1 == "old secret"),
         "local history kept"
     );
+}
+
+async fn ws_events(
+    url: &str,
+    token: &str,
+) -> tokio::sync::mpsc::UnboundedReceiver<bunkr_proto::ServerWs> {
+    use futures_util::{SinkExt, StreamExt};
+    let ws_url = url.replace("http://", "ws://") + "/api/ws";
+    let (mut ws, _) = tokio_tungstenite::connect_async(ws_url).await.unwrap();
+    let auth = serde_json::to_string(&bunkr_proto::ClientWs::Auth {
+        token: token.into(),
+    })
+    .unwrap();
+    ws.send(tokio_tungstenite::tungstenite::Message::Text(auth.into()))
+        .await
+        .unwrap();
+    let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+    tokio::spawn(async move {
+        while let Some(Ok(m)) = ws.next().await {
+            if let tokio_tungstenite::tungstenite::Message::Text(t) = m {
+                if let Ok(ev) = serde_json::from_str(&t) {
+                    let _ = tx.send(ev);
+                }
+            }
+        }
+    });
+    rx
+}
+
+#[tokio::test]
+async fn rich_messages_dms_files_ephemeral() {
+    use bunkr_core::device::Eph;
+    let srv = start_server(3599).await;
+    let url = srv.url.clone();
+    let mut alice = Client::register(&url, "alice", "Alice-pass-1234", Some("SETUP123")).await;
+    alice.tick().await.unwrap();
+    let mut bob = Client::register(&url, "bob", "Bob-pass-12345", None).await;
+    let mut eve = Client::register(&url, "eve", "Eve-pass-123456", None).await;
+    settle(&mut [&mut bob, &mut eve, &mut alice]).await;
+    let g = alice.chan("general");
+
+    // reply, edit, react, delete
+    let id = alice
+        .dev
+        .send_message(&alice.http, g, "original", None, vec![], vec![], NOW)
+        .await
+        .unwrap();
+    bob.dev
+        .send_message(
+            &bob.http,
+            g,
+            "a reply",
+            Some(id.clone()),
+            vec![],
+            vec![],
+            NOW,
+        )
+        .await
+        .unwrap();
+    alice
+        .dev
+        .edit_message(&alice.http, g, &id, "edited!", NOW)
+        .await
+        .unwrap();
+    bob.dev.react(&bob.http, g, &id, "🔥", NOW).await.unwrap();
+    eve.dev.react(&eve.http, g, &id, "🔥", NOW).await.unwrap();
+    assert!(bob
+        .dev
+        .edit_message(&bob.http, g, &id, "hijack", NOW)
+        .await
+        .is_err());
+    settle(&mut [&mut alice, &mut bob, &mut eve]).await;
+    let find = |c: &Client, id: &str| {
+        c.dev.chans[&g]
+            .messages
+            .iter()
+            .find(|m| m.id == id)
+            .cloned()
+            .unwrap()
+    };
+    for c in [&alice, &bob, &eve] {
+        let m = find(c, &id);
+        assert_eq!(m.body, MsgBody::Text("edited!".into()));
+        assert!(m.edited.is_some());
+        assert_eq!(m.reactions["🔥"].len(), 2);
+    }
+    assert!(bob.dev.chans[&g]
+        .messages
+        .iter()
+        .any(|m| m.reply_to.as_deref() == Some(id.as_str())));
+    bob.dev.react(&bob.http, g, &id, "🔥", NOW).await.unwrap(); // toggle off
+    alice
+        .dev
+        .delete_message(&alice.http, g, &id, NOW)
+        .await
+        .unwrap();
+    settle(&mut [&mut alice, &mut bob, &mut eve]).await;
+    assert_eq!(find(&eve, &id).body, MsgBody::Deleted);
+    assert_eq!(find(&bob, &id).body, MsgBody::Deleted);
+
+    // DMs: only the two participants are ever in the group
+    let dm = alice
+        .dev
+        .open_dm(&alice.http, bob.dev.user_id, NOW)
+        .await
+        .unwrap();
+    settle(&mut [&mut alice, &mut bob, &mut eve]).await;
+    assert!(bob.dev.is_joined(dm));
+    assert!(
+        !eve.dev.channels.iter().any(|c| c.id == dm),
+        "eve can't see the DM"
+    );
+    let r = eve
+        .http
+        .request("GET", &format!("/api/channels/{dm}/log?after=0"), None)
+        .await
+        .unwrap();
+    assert_eq!(r.0, 404, "eve can't read DM ciphertext");
+    let r = eve
+        .http
+        .request("POST", &format!("/api/channels/{dm}/rejoin"), None)
+        .await
+        .unwrap();
+    assert_eq!(r.0, 404, "eve can't ask to join a DM");
+    bob.dev
+        .send_text(&bob.http, dm, "just us", NOW)
+        .await
+        .unwrap();
+    alice.tick().await.unwrap();
+    assert!(alice.texts_in(dm).contains(&"just us".to_string()));
+    let devs = alice.dev.member_devices(dm);
+    assert!(devs
+        .iter()
+        .all(|(u, _, ok)| (*u == alice.dev.user_id || *u == bob.dev.user_id) && *ok));
+    assert_eq!(
+        alice
+            .dev
+            .open_dm(&alice.http, bob.dev.user_id, NOW)
+            .await
+            .unwrap(),
+        dm,
+        "same DM reused"
+    );
+
+    // Files: encrypted, only members can fetch, uploader can delete
+    let secret_file = b"%PDF top secret contents".repeat(1000);
+    let (fref, token) = alice
+        .dev
+        .upload_file(
+            &alice.http,
+            dm,
+            &secret_file,
+            "plan.pdf",
+            "application/pdf",
+            None,
+        )
+        .await
+        .unwrap();
+    let blob_path = std::fs::read_dir(srv.db.parent().unwrap().join("blobs"))
+        .unwrap()
+        .next()
+        .unwrap()
+        .unwrap()
+        .path()
+        .join(&fref.blob);
+    let on_disk = std::fs::read(&blob_path).unwrap();
+    assert!(
+        !on_disk.windows(10).any(|w| w == b"top secret"),
+        "blob is encrypted at rest"
+    );
+    alice
+        .dev
+        .send_message(
+            &alice.http,
+            dm,
+            "",
+            None,
+            vec![fref.clone()],
+            vec![token],
+            NOW,
+        )
+        .await
+        .unwrap();
+    bob.tick().await.unwrap();
+    let got = bob.dev.chans[&dm]
+        .messages
+        .iter()
+        .find_map(|m| m.files.first().cloned())
+        .unwrap();
+    assert_eq!(
+        Device::download_file(&bob.http, &got).await.unwrap(),
+        secret_file
+    );
+    let r = eve
+        .http
+        .request("GET", &format!("/api/blobs/{}", fref.blob), None)
+        .await
+        .unwrap();
+    assert_eq!(r.0, 404, "eve can't download DM files");
+    let r = bob
+        .http
+        .request(
+            "DELETE",
+            &format!("/api/blobs/{}?token=wrong", fref.blob),
+            None,
+        )
+        .await
+        .unwrap();
+    assert_eq!(r.0, 403);
+    let fid = alice.dev.chans[&dm]
+        .messages
+        .iter()
+        .find(|m| !m.files.is_empty())
+        .unwrap()
+        .id
+        .clone();
+    alice
+        .dev
+        .delete_message(&alice.http, dm, &fid, NOW)
+        .await
+        .unwrap();
+    assert!(
+        Device::download_file(&bob.http, &got).await.is_err(),
+        "file gone after delete"
+    );
+    assert!(!blob_path.exists());
+
+    // Ephemeral: relayed encrypted over websocket, never stored
+    alice.tick().await.unwrap();
+    let mut rx = ws_events(&url, &bob.dev.token).await;
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    alice
+        .dev
+        .send_ephemeral(&alice.http, g, &Eph::Typing, NOW)
+        .await
+        .unwrap();
+    let ev = loop {
+        match tokio::time::timeout(Duration::from_secs(5), rx.recv())
+            .await
+            .unwrap()
+            .unwrap()
+        {
+            bunkr_proto::ServerWs::Ephemeral { channel_id, data } => break (channel_id, data),
+            _ => continue,
+        }
+    };
+    assert_eq!(ev.0, g);
+    let (u, _, trusted, e) = bob.dev.open_ephemeral(g, &ev.1 .0).unwrap();
+    assert_eq!((u, trusted, e), (alice.dev.user_id, true, Eph::Typing));
+    assert!(eve.dev.open_ephemeral(dm, &ev.1 .0).is_none());
+    let head: Vec<i64> = alice.dev.channels.iter().map(|c| c.head_seq).collect();
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    alice.tick().await.unwrap();
+    let head2: Vec<i64> = alice.dev.channels.iter().map(|c| c.head_seq).collect();
+    assert_eq!(head, head2, "ephemeral not stored in the log");
 }

@@ -52,6 +52,23 @@ pub struct ServerInfo {
     pub needs_setup: bool,
     pub registration_open: bool,
     pub retention_days: u32,
+    /// Max encrypted attachment size in bytes.
+    #[serde(default)]
+    pub max_upload: u64,
+    /// A TURN relay is configured (calls work across networks).
+    #[serde(default)]
+    pub calls_relay: bool,
+    /// Web push is available.
+    #[serde(default)]
+    pub push: bool,
+}
+
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum ChannelKind {
+    #[default]
+    Public,
+    Dm,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
@@ -147,6 +164,11 @@ pub struct Channel {
     /// The caller may (re)found the group: nobody is in it, or no member
     /// device has been online while the caller waited to be let in.
     pub can_found: bool,
+    #[serde(default)]
+    pub kind: ChannelKind,
+    /// For DMs: the two participants.
+    #[serde(default)]
+    pub dm_users: Vec<UserId>,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
@@ -321,6 +343,62 @@ pub enum ServerWs {
     },
     /// This session is dead (logout, ban, password change). Wipe everything.
     Revoked,
+    /// Encrypted, never-stored MLS message (typing, call signalling).
+    Ephemeral {
+        channel_id: ChannelId,
+        data: B64,
+    },
+}
+
+// ---------- direct messages ----------
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct DmReq {
+    pub user_id: UserId,
+}
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct DmResp {
+    pub channel_id: ChannelId,
+}
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct TtlReq {
+    pub ttl_hours: i64,
+}
+
+// ---------- attachments ----------
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct BlobResp {
+    pub id: String,
+    /// Proves the uploader may delete the blob. Kept only on the uploader's device.
+    pub delete_token: String,
+}
+
+// ---------- push / calls ----------
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct VapidResp {
+    /// Uncompressed P-256 public key, base64url without padding.
+    pub public_key: String,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct PushSubscribeReq {
+    pub endpoint: String,
+    /// "all" or "dm".
+    pub scope: String,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct IceServer {
+    pub urls: Vec<String>,
+    pub username: Option<String>,
+    pub credential: Option<String>,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct TurnResp {
+    pub ice_servers: Vec<IceServer>,
 }
 
 // ---------- admin ----------

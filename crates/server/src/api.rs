@@ -32,6 +32,11 @@ pub const MAX_KEY_PACKAGES: i64 = 200;
 pub struct Config {
     pub name: String,
     pub retention_days: u32,
+    pub data_dir: std::path::PathBuf,
+    pub max_upload: u64,
+    pub turn_urls: Vec<String>,
+    pub stun_urls: Vec<String>,
+    pub turn_secret: Option<String>,
     /// How long a device waits for an online member before it may re-found.
     pub refound_after_secs: i64,
 }
@@ -44,6 +49,7 @@ pub struct AppState {
     pub secret: Arc<[u8; 32]>,
     pub setup_code: Arc<Mutex<Option<String>>>,
     pub limiter: Arc<Mutex<HashMap<String, (u32, Instant)>>>,
+    pub push: Option<Arc<crate::push::Push>>,
 }
 
 // ---------------- errors ----------------
@@ -54,16 +60,16 @@ pub enum ApiErr {
 }
 
 impl ApiErr {
-    fn bad(m: impl Into<String>) -> Self {
+    pub(crate) fn bad(m: impl Into<String>) -> Self {
         ApiErr::Status(StatusCode::BAD_REQUEST, m.into())
     }
-    fn forbidden(m: impl Into<String>) -> Self {
+    pub(crate) fn forbidden(m: impl Into<String>) -> Self {
         ApiErr::Status(StatusCode::FORBIDDEN, m.into())
     }
-    fn unauthorized() -> Self {
+    pub(crate) fn unauthorized() -> Self {
         ApiErr::Status(StatusCode::UNAUTHORIZED, "unauthorized".into())
     }
-    fn not_found() -> Self {
+    pub(crate) fn not_found() -> Self {
         ApiErr::Status(StatusCode::NOT_FOUND, "not found".into())
     }
 }
@@ -84,9 +90,9 @@ impl IntoResponse for ApiErr {
     }
 }
 
-type R<T> = Result<Json<T>, ApiErr>;
+pub(crate) type R<T> = Result<Json<T>, ApiErr>;
 
-fn now_secs() -> i64 {
+pub(crate) fn now_secs() -> i64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap()
@@ -95,11 +101,11 @@ fn now_secs() -> i64 {
 fn today() -> i64 {
     now_secs() / 86_400
 }
-fn this_hour() -> i64 {
+pub(crate) fn this_hour() -> i64 {
     now_secs() / 3_600
 }
 
-fn sha(b: &[u8]) -> Vec<u8> {
+pub(crate) fn sha(b: &[u8]) -> Vec<u8> {
     Sha256::digest(b).to_vec()
 }
 
@@ -107,7 +113,7 @@ fn auth_hash(auth_key: &[u8]) -> Vec<u8> {
     sha(&[b"bunkr/auth-hash/v1\0".as_slice(), auth_key].concat())
 }
 
-fn new_token() -> String {
+pub(crate) fn new_token() -> String {
     let mut b = [0u8; 32];
     rand::rngs::OsRng.fill_bytes(&mut b);
     hex::encode(b)
@@ -230,6 +236,7 @@ pub fn router() -> Router<AppState> {
         )
         .route("/api/admin/log/{seq}", delete(admin_delete_entry))
         .route("/api/admin/settings", post(admin_settings))
+        .merge(crate::extra::router())
 }
 
 // ---------------- public ----------------
@@ -246,6 +253,9 @@ async fn info(State(st): State<AppState>) -> R<ServerInfo> {
         needs_setup: users == 0,
         registration_open: open || users == 0,
         retention_days: st.cfg.retention_days,
+        max_upload: st.cfg.max_upload,
+        calls_relay: !st.cfg.turn_urls.is_empty() && st.cfg.turn_secret.is_some(),
+        push: st.push.is_some(),
     }))
 }
 
@@ -485,8 +495,12 @@ async fn register_device(
             )?;
             // Ask every populated channel to let this device in.
             tx.execute(
-                "INSERT OR IGNORE INTO joins(channel_id, device_id)
-                 SELECT DISTINCT channel_id, ? FROM members",
+                &format!(
+                    "INSERT OR IGNORE INTO joins(channel_id, device_id)
+                     SELECT DISTINCT ch.id, ?1 FROM channels ch
+                     WHERE EXISTS(SELECT 1 FROM members m WHERE m.channel_id = ch.id) AND {}",
+                    db::ALLOWED.replace("{dev}", "?1")
+                ),
                 [did],
             )?;
             let chans: Vec<i64> = {
@@ -526,7 +540,7 @@ fn verify_ed25519(pk: &[u8], msg: &[u8], sig: &[u8]) -> bool {
     vk.verify(msg, &sig).is_ok()
 }
 
-async fn notify_pending(st: &AppState, chans: Vec<i64>) {
+pub(crate) async fn notify_pending(st: &AppState, chans: Vec<i64>) {
     for ch in chans {
         let members = st
             .db
@@ -655,6 +669,9 @@ fn may_found(
     ch: i64,
     device: i64,
 ) -> rusqlite::Result<bool> {
+    if !db::allowed(c, ch, device)? {
+        return Ok(false);
+    }
     let members = db::channel_members(c, ch)?;
     if members.is_empty() {
         return Ok(true);
@@ -689,7 +706,7 @@ async fn state(State(st): State<AppState>, d: Dev) -> R<StateResp> {
                 [d.device_id],
                 |r| r.get(0),
             )?;
-            let mut q = c.prepare(
+            let sql = format!(
                 "SELECT ch.id, ch.name, ch.topic, ch.position, ch.epoch, ch.generation, ch.ttl_hours,
                    (SELECT COUNT(*) FROM members m WHERE m.channel_id = ch.id),
                    EXISTS(SELECT 1 FROM members m WHERE m.channel_id = ch.id AND m.device_id = ?1),
@@ -697,9 +714,12 @@ async fn state(State(st): State<AppState>, d: Dev) -> R<StateResp> {
                    EXISTS(SELECT 1 FROM removals r WHERE r.channel_id = ch.id)
                      OR EXISTS(SELECT 1 FROM joins j WHERE j.channel_id = ch.id
                                AND EXISTS(SELECT 1 FROM key_packages k WHERE k.device_id = j.device_id)),
-                   EXISTS(SELECT 1 FROM welcomes w WHERE w.channel_id = ch.id AND w.device_id = ?1)
-                 FROM channels ch ORDER BY ch.position, ch.id",
-            )?;
+                   EXISTS(SELECT 1 FROM welcomes w WHERE w.channel_id = ch.id AND w.device_id = ?1),
+                   ch.kind,
+                   (SELECT group_concat(user_id) FROM channel_users cu WHERE cu.channel_id = ch.id)
+                 FROM channels ch WHERE {{allowed}} ORDER BY ch.position, ch.id",
+            ).replace("{allowed}", &db::ALLOWED.replace("{dev}", "?1"));
+            let mut q = c.prepare(&sql)?;
             let channels = q
                 .query_map([d.device_id], |r| {
                     Ok(proto::Channel {
@@ -716,6 +736,17 @@ async fn state(State(st): State<AppState>, d: Dev) -> R<StateResp> {
                         has_pending: r.get(10)?,
                         has_welcome: r.get(11)?,
                         can_found: false,
+                        kind: if r.get::<_, String>(12)? == "dm" {
+                            ChannelKind::Dm
+                        } else {
+                            ChannelKind::Public
+                        },
+                        dm_users: r
+                            .get::<_, Option<String>>(13)?
+                            .unwrap_or_default()
+                            .split(',')
+                            .filter_map(|x| x.parse().ok())
+                            .collect(),
                     })
                 })?
                 .collect::<rusqlite::Result<_>>()?;
@@ -825,7 +856,7 @@ struct After {
 
 async fn channel_log(
     State(st): State<AppState>,
-    _d: Dev,
+    d: Dev,
     Path(ch): Path<i64>,
     Query(q): Query<After>,
 ) -> R<LogResp> {
@@ -833,6 +864,9 @@ async fn channel_log(
     let res = st
         .db
         .run(move |c| -> Result<LogResp, ApiErr> {
+            if !db::allowed(c, ch, d.device_id)? {
+                return Err(ApiErr::not_found());
+            }
             let purged: Option<i64> = c
                 .query_row("SELECT purged_upto FROM channels WHERE id = ?", [ch], |r| r.get(0))
                 .optional()?;
@@ -865,7 +899,7 @@ async fn channel_log(
 }
 
 /// Shared epoch/generation/membership gate for sends and commits.
-fn gate(
+pub(crate) fn gate(
     tx: &rusqlite::Connection,
     ch: i64,
     device: i64,
@@ -929,6 +963,7 @@ async fn send(
             seq,
         },
     );
+    crate::push::notify(&st, ch, d.user_id);
     Ok(Json(SendResp { seq }))
 }
 
@@ -1059,7 +1094,12 @@ async fn found(
             )?;
             let seq = tx.last_insert_rowid();
             tx.execute(
-                "INSERT OR IGNORE INTO joins(channel_id, device_id) SELECT ?, id FROM devices WHERE id != ?",
+                &format!(
+                    "INSERT OR IGNORE INTO joins(channel_id, device_id)
+                     SELECT ch.id, d.id FROM channels ch, devices d
+                     WHERE ch.id = ?1 AND d.id != ?2 AND {}",
+                    db::ALLOWED.replace("{dev}", "d.id")
+                ),
                 params![ch, d.device_id],
             )?;
             tx.commit()?;
@@ -1148,10 +1188,14 @@ async fn dismiss(
 
 async fn rejoin(State(st): State<AppState>, d: Dev, Path(ch): Path<i64>) -> R<()> {
     st.db
-        .run(move |c| -> rusqlite::Result<()> {
+        .run(move |c| -> Result<(), ApiErr> {
             let tx = c.transaction()?;
+            if !db::allowed(&tx, ch, d.device_id)? {
+                return Err(ApiErr::not_found());
+            }
             requeue(&tx, ch, d.device_id)?;
-            tx.commit()
+            tx.commit()?;
+            Ok(())
         })
         .await?;
     notify_pending(&st, vec![ch]).await;
@@ -1374,7 +1418,7 @@ async fn admin_update_channel(
         .run(move |c| -> Result<(), ApiErr> {
             let n = c
                 .execute(
-                    "UPDATE channels SET name = ?, topic = ?, ttl_hours = ? WHERE id = ?",
+                    "UPDATE channels SET name = ?, topic = ?, ttl_hours = ? WHERE id = ? AND kind = 'public'",
                     params![name, topic, ttl, id],
                 )
                 .map_err(|_| ApiErr::bad("Channel name already exists"))?;
@@ -1389,9 +1433,21 @@ async fn admin_update_channel(
 }
 
 async fn admin_delete_channel(State(st): State<AppState>, _a: Admin, Path(id): Path<i64>) -> R<()> {
-    st.db
-        .run(move |c| c.execute("DELETE FROM channels WHERE id = ?", [id]))
+    let blobs = st
+        .db
+        .run(move |c| -> rusqlite::Result<Vec<String>> {
+            let mut q = c.prepare("SELECT id FROM blobs WHERE channel_id = ?")?;
+            let ids = q
+                .query_map([id], |r| r.get(0))?
+                .collect::<rusqlite::Result<Vec<String>>>()?;
+            c.execute(
+                "DELETE FROM channels WHERE id = ? AND kind = 'public'",
+                [id],
+            )?;
+            Ok(ids)
+        })
         .await?;
+    crate::extra::remove_blob_files(&st, &blobs);
     st.hub.broadcast(ServerWs::State);
     Ok(Json(()))
 }
@@ -1403,7 +1459,8 @@ async fn admin_delete_entry(State(st): State<AppState>, _a: Admin, Path(seq): Pa
         .run(move |c| -> rusqlite::Result<Option<i64>> {
             let ch: Option<i64> = c
                 .query_row(
-                    "SELECT channel_id FROM log WHERE seq = ? AND kind = 0",
+                    "SELECT l.channel_id FROM log l JOIN channels ch ON ch.id = l.channel_id
+                     WHERE l.seq = ? AND l.kind = 0 AND ch.kind = 'public'",
                     [seq],
                     |r| r.get(0),
                 )
