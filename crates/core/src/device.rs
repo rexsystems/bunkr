@@ -471,7 +471,7 @@ impl Device {
             }
             let joined = self.groups.contains_key(&c.id);
             if !joined {
-                if c.member_count == 0 {
+                if c.can_found {
                     self.found(http, c.id, c.generation, now_ms).await?;
                 } else if c.is_member && !c.has_welcome {
                     // Server thinks we are in but we lost the group: ask again.

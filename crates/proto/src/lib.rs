@@ -144,6 +144,9 @@ pub struct Channel {
     pub has_pending: bool,
     /// Is a welcome waiting for the calling device?
     pub has_welcome: bool,
+    /// The caller may (re)found the group: nobody is in it, or no member
+    /// device has been online while the caller waited to be let in.
+    pub can_found: bool,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]

@@ -28,10 +28,13 @@ use crate::hub::Hub;
 pub const MAX_DEVICES_PER_USER: i64 = 10;
 pub const MAX_KEY_PACKAGES: i64 = 200;
 
+
 #[derive(Clone)]
 pub struct Config {
     pub name: String,
     pub retention_days: u32,
+    /// How long a device waits for an online member before it may re-found.
+    pub refound_after_secs: i64,
 }
 
 #[derive(Clone)]
@@ -431,6 +434,7 @@ async fn register_device(
     if s.device_id.is_some() {
         return Err(ApiErr::bad("session already has a device"));
     }
+    let st2 = st.clone();
     let (did, chans) = st
         .db
         .run(move |c| -> Result<(i64, Vec<i64>), ApiErr> {
@@ -450,8 +454,17 @@ async fn register_device(
                 [s.user_id],
                 |r| r.get(0),
             )?;
+            // At the limit, the oldest device is retired automatically
+            // (e.g. browsers that were wiped without logging out).
+            let mut retired = vec![];
             if n >= MAX_DEVICES_PER_USER {
-                return Err(ApiErr::bad("Too many devices. Log out somewhere else first."));
+                let oldest: i64 = tx.query_row(
+                    "SELECT MIN(id) FROM devices WHERE user_id = ?",
+                    [s.user_id],
+                    |r| r.get(0),
+                )?;
+                retired = db::revoke_device(&tx, oldest)?;
+                retired.push(-oldest);
             }
             tx.execute(
                 "INSERT INTO devices(user_id, sig_pk) VALUES(?, ?)",
@@ -474,7 +487,17 @@ async fn register_device(
                 rows.collect::<rusqlite::Result<_>>()?
             };
             tx.commit()?;
-            Ok((did, chans))
+            let mut all = chans;
+            for r in retired {
+                if r < 0 {
+                    st2.hub.revoke(-r);
+                } else {
+                    all.push(r);
+                }
+            }
+            all.sort_unstable();
+            all.dedup();
+            Ok((did, all))
         })
         .await?;
     notify_pending(&st, chans).await;
@@ -607,7 +630,27 @@ async fn upload_key_packages(
     Ok(Json(()))
 }
 
+/// Can `device` found channel `ch` right now?
+fn may_found(st: &AppState, c: &rusqlite::Connection, ch: i64, device: i64) -> rusqlite::Result<bool> {
+    let members = db::channel_members(c, ch)?;
+    if members.is_empty() {
+        return Ok(true);
+    }
+    if members.contains(&device) || st.hub.any_online(&members) {
+        return Ok(false);
+    }
+    let since: Option<i64> = c
+        .query_row(
+            "SELECT since FROM joins WHERE channel_id = ? AND device_id = ?",
+            params![ch, device],
+            |r| r.get(0),
+        )
+        .optional()?;
+    Ok(since.map(|s| now_secs() - s >= st.cfg.refound_after_secs).unwrap_or(false))
+}
+
 async fn state(State(st): State<AppState>, d: Dev) -> R<StateResp> {
+    let st2 = st.clone();
     let res = st
         .db
         .run(move |c| -> rusqlite::Result<StateResp> {
@@ -647,6 +690,7 @@ async fn state(State(st): State<AppState>, d: Dev) -> R<StateResp> {
                         head_seq: r.get(9)?,
                         has_pending: r.get(10)?,
                         has_welcome: r.get(11)?,
+                        can_found: false,
                     })
                 })?
                 .collect::<rusqlite::Result<_>>()?;
@@ -663,6 +707,10 @@ async fn state(State(st): State<AppState>, d: Dev) -> R<StateResp> {
                     })
                 })?
                 .collect::<rusqlite::Result<_>>()?;
+            let mut channels: Vec<proto::Channel> = channels;
+            for ch in channels.iter_mut() {
+                ch.can_found = !ch.is_member && may_found(&st2, c, ch.id, d.device_id)?;
+            }
             Ok(StateResp {
                 user_id: d.user_id,
                 device_id: d.device_id,
@@ -938,6 +986,7 @@ async fn found(
     Path(ch): Path<i64>,
     Json(req): Json<FoundReq>,
 ) -> R<FoundResp> {
+    let st2 = st.clone();
     let res = st
         .db
         .run(move |c| -> Result<FoundResp, ApiErr> {
@@ -950,10 +999,12 @@ async fn found(
                 )
                 .optional()?;
             let (epoch, generation) = row.ok_or_else(ApiErr::not_found)?;
-            if db::member_count(&tx, ch)? > 0 || generation != req.generation {
+            if !may_found(&st2, &tx, ch, d.device_id)? || generation != req.generation {
                 return Err(ApiErr::Conflict(Conflict { epoch, generation }));
             }
             let generation = generation + 1;
+            // Absent members get re-added to the new group when they return.
+            tx.execute("DELETE FROM members WHERE channel_id = ?", [ch])?;
             tx.execute(
                 "UPDATE channels SET generation = ?, epoch = 0 WHERE id = ?",
                 params![generation, ch],

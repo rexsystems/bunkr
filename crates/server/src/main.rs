@@ -87,6 +87,7 @@ async fn main() {
         cfg: api::Config {
             name,
             retention_days,
+            refound_after_secs: env("BUNKR_REFOUND_SECS", "8").parse().unwrap_or(8),
         },
         secret: Arc::new(secret),
         setup_code: Arc::new(Mutex::new(setup_code)),
@@ -151,7 +152,7 @@ async fn main() {
         ))
         .layer(SetResponseHeaderLayer::overriding(
             header::HeaderName::from_static("permissions-policy"),
-            HeaderValue::from_static("camera=(), microphone=(), geolocation=(), interest-cohort=()"),
+            HeaderValue::from_static("camera=(), microphone=(), geolocation=()"),
         ))
         .layer(SetResponseHeaderLayer::overriding(
             header::HeaderName::from_static("cross-origin-opener-policy"),

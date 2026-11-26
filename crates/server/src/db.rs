@@ -81,6 +81,7 @@ CREATE INDEX IF NOT EXISTS log_by_channel ON log(channel_id, seq);
 CREATE TABLE IF NOT EXISTS joins(
   channel_id INTEGER NOT NULL REFERENCES channels(id) ON DELETE CASCADE,
   device_id INTEGER NOT NULL REFERENCES devices(id) ON DELETE CASCADE,
+  since INTEGER NOT NULL DEFAULT (unixepoch()),
   PRIMARY KEY(channel_id, device_id)
 );
 
@@ -191,14 +192,6 @@ pub fn revoke_user(c: &Connection, user: i64) -> DbResult<(Vec<i64>, Vec<i64>)> 
     chans.sort_unstable();
     chans.dedup();
     Ok((devices, chans))
-}
-
-pub fn member_count(c: &Connection, channel: i64) -> DbResult<i64> {
-    c.query_row(
-        "SELECT COUNT(*) FROM members WHERE channel_id = ?",
-        [channel],
-        |r| r.get(0),
-    )
 }
 
 pub fn ensure_default_channel(c: &Connection) -> DbResult<()> {

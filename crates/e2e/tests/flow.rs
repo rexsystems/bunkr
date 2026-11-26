@@ -61,14 +61,15 @@ impl Drop for Server {
     }
 }
 
-async fn start_server() -> Server {
+async fn start_server(refound_secs: u32) -> Server {
     let dir = tempfile::tempdir().unwrap();
-    let port = 20000 + (std::process::id() % 20000) as u16;
+    let port = 20000 + (std::process::id() % 20000) as u16 + refound_secs as u16 % 7;
     let bin = concat!(env!("CARGO_MANIFEST_DIR"), "/../../target/debug/bunkr-server");
     let child = Command::new(bin)
         .env("BUNKR_DATA", dir.path())
         .env("BUNKR_BIND", format!("127.0.0.1:{port}"))
         .env("BUNKR_SETUP_CODE", "SETUP123")
+        .env("BUNKR_REFOUND_SECS", refound_secs.to_string())
         .env("BUNKR_WEB_DIR", dir.path())
         .spawn()
         .expect("build the server first: cargo build -p bunkr-server");
@@ -150,7 +151,7 @@ async fn settle(clients: &mut [&mut Client]) {
 
 #[tokio::test]
 async fn full_flow() {
-    let srv = start_server().await;
+    let srv = start_server(3600).await;
     let url = srv.url.clone();
 
     // Setup code is mandatory for the first (admin) account.
@@ -274,4 +275,30 @@ async fn full_flow() {
     alice2.tick().await.unwrap();
     assert!(alice2.dev.is_joined(general));
     alice2.send("general", "back").await;
+}
+
+#[tokio::test]
+async fn refound_when_members_offline() {
+    let srv = start_server(1).await;
+    let url = srv.url.clone();
+    let mut alice = Client::register(&url, "alice", "Alice-pass-1234", Some("SETUP123")).await;
+    alice.tick().await.unwrap();
+    let general = alice.chan("general");
+    alice.send("general", "old secret").await;
+    // Alice goes away (closes the browser, never logs out). Bob arrives.
+    let mut bob = Client::register(&url, "bob", "Bob-pass-12345", None).await;
+    tokio::time::sleep(Duration::from_millis(1600)).await;
+    bob.tick().await.unwrap();
+    assert!(bob.dev.is_joined(general), "bob re-founds since nobody is online");
+    bob.send("general", "anyone?").await;
+    assert!(!bob.texts("general").iter().any(|t| t.1 == "old secret"));
+    // Alice returns: she drops the stale group and bob lets her back in.
+    alice.tick().await.unwrap();
+    bob.tick().await.unwrap();
+    alice.tick().await.unwrap();
+    assert!(alice.dev.is_joined(general));
+    bob.send("general", "welcome back").await;
+    alice.tick().await.unwrap();
+    assert!(alice.texts("general").iter().any(|t| t.1 == "welcome back"));
+    assert!(alice.texts("general").iter().any(|t| t.1 == "old secret"), "local history kept");
 }

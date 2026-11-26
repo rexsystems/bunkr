@@ -64,6 +64,11 @@ impl Hub {
         }
     }
 
+    pub fn any_online(&self, devices: &[DeviceId]) -> bool {
+        let m = self.inner.lock().unwrap();
+        devices.iter().any(|d| m.contains_key(d))
+    }
+
     /// Kill a device's live sockets.
     pub fn revoke(&self, device: DeviceId) {
         let v = self.inner.lock().unwrap().remove(&device);
